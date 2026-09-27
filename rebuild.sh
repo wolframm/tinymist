@@ -59,7 +59,7 @@ grep -q 'e.metaKey || e.ctrlKey || e.altKey' crates/tinymist-assets/src/typst-pr
 # Cargo.toml, so this bundles the page built above rather than the crates.io one.
 cargo build --release -p tinymist-cli
 bin=target/release/tinymist
-strings -a "$bin" | grep -q 'e.metaKey || e.ctrlKey || e.altKey' || { echo "binary lacks the flavor preview page" >&2; exit 1; }
+strings -a "$bin" | grep -q 'waitForServerThenReload' || { echo "binary lacks the flavor preview page" >&2; exit 1; }
 
 # ---------------------------------------------------------------- install
 mkdir -p ~/.local/bin
