@@ -21,6 +21,9 @@ and the LSP both run it.
 |---|---|---|
 | fix(preview): let modifier shortcuts and arrow keys reach the browser | the preview page's key handler ignored modifiers, so Cmd+T toggled the theme and Cmd+↑ / arrows / Space were swallowed | PR #2727 |
 | fix(preview): jump from a heading lands on the heading, not its outline entry | a span found on several pages jumped to the first — the Contents entry; for a cursor inside a heading the last occurrence is taken | to file |
+| fix(preview): resolve a cursor that sits before its text | `jump_from_cursor` only matched the leaf BEFORE the cursor, so a cursor on a line's first character never synced the preview | to file |
+| feat(preview): hand `file:` link clicks to the editor, leave other links to the browser | `jump_from_click` skipped links outright; the page now prevents the (impossible) navigation of a `file:` link and lets the click reach the editor, and stops other link clicks before the source handler | flavor |
+| feat(preview): reload the page when its server comes back | the old reconnect targeted the data-plane port, which changes on restart; now the page waits for its own address and reloads, restoring the scroll position | flavor |
 | build: bundle the locally built preview page | un-comments the `tinymist-assets = { path = ... }` patch in `Cargo.toml` | flavor only |
 
 ## Rebuilding for a new upstream release
