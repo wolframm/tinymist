@@ -9,7 +9,7 @@ use typst::{
     World,
     introspection::PagedPosition as Position,
     layout::{Frame, FrameItem, Point, Size},
-    syntax::{LinkedNode, Source, Span, SyntaxKind},
+    syntax::{LinkedNode, Side, Source, Span, SyntaxKind},
     visualize::Geometry,
 };
 use typst_shim::syntax::LinkedNodeExt;
@@ -109,12 +109,14 @@ fn jump_from_cursor_(
     // also match a text if it is after the cursor
     // The case `leaf_at_compat` will match: `Hello|`
     // FIXME: The case `leaf_at_compat` will not match: `|Hello`
-    let node = LinkedNode::new(source.root()).leaf_at_compat(cursor)?;
-    // todo: When we click on a label or some math operators, we seems likely also
-    // be able to jump to some place.
-    if !matches!(node.kind(), SyntaxKind::Text | SyntaxKind::MathText) {
-        return None;
-    };
+    // The text before the cursor (`Hello|`), else the text after it (`|Hello`):
+    // an editor cursor on the first character of a line is the common case.
+    let root = LinkedNode::new(source.root());
+    let is_text = |n: &LinkedNode| matches!(n.kind(), SyntaxKind::Text | SyntaxKind::MathText);
+    let node = root
+        .leaf_at_compat(cursor)
+        .filter(is_text)
+        .or_else(|| root.leaf_at(cursor, Side::After).filter(is_text))?;
 
     // Generated listings — the outline, a list of figures — precede the content
     // they list and reuse its spans. For a cursor inside a heading the intended
