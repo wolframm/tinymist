@@ -261,6 +261,62 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     return svgDoc;
   }
 
+  function saveScrollPosition() {
+    try {
+      const main = document.getElementById("typst-container-main");
+      if (main) {
+        sessionStorage.setItem("typst-preview-scroll-top", String(main.scrollTop));
+      }
+    } catch (_) {
+      // storage unavailable: the reload lands at the top
+    }
+  }
+
+  // After a reload triggered above, put the document back where it was once
+  // enough of it has rendered.
+  function restoreScrollPosition() {
+    let saved: number | null = null;
+    try {
+      const raw = sessionStorage.getItem("typst-preview-scroll-top");
+      if (raw !== null) {
+        sessionStorage.removeItem("typst-preview-scroll-top");
+        saved = Number.parseFloat(raw);
+      }
+    } catch (_) {
+      return;
+    }
+    if (saved === null || !Number.isFinite(saved) || saved <= 0) {
+      return;
+    }
+    let tries = 0;
+    const attempt = () => {
+      const main = document.getElementById("typst-container-main");
+      if (main && main.scrollHeight >= saved! + main.clientHeight) {
+        main.scrollTo({ top: saved!, behavior: "instant" });
+        return;
+      }
+      if (++tries < 100) {
+        setTimeout(attempt, 100);
+      }
+    };
+    attempt();
+  }
+  restoreScrollPosition();
+
+  function waitForServerThenReload() {
+    const probe = () =>
+      fetch(location.href, { cache: "no-store", method: "HEAD" })
+        .then((res) => {
+          if (res.ok) {
+            location.reload();
+          } else {
+            setTimeout(probe, 1000);
+          }
+        })
+        .catch(() => setTimeout(probe, 1000));
+    setTimeout(probe, 500);
+  }
+
   function setupSocket(svgDoc: TypstDocument): () => void {
     windowElem.documents.push(svgDoc);
 
@@ -284,7 +340,13 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           console.log("WebSocket connection closed", e);
           $ws?.unsubscribe();
           if (!disposed) {
-            setTimeout(() => setupSocket(svgDoc), 1000);
+            // The data plane is on a port of its own that changes with every
+            // restart of the server, so reconnecting to `url` cannot succeed.
+            // Wait for the page's own server to answer again and reload from
+            // it; the reload picks up the new data plane. The scroll position
+            // survives through sessionStorage (restoreScrollPosition).
+            saveScrollPosition();
+            waitForServerThenReload();
           }
         },
       },
