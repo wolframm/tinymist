@@ -216,6 +216,13 @@ pub struct PreviewCliArgs {
     )]
     pub static_file_host: String,
 
+    /// With a static file host on port 0, pick a port that is the same for
+    /// this document every time (derived from the input path, in 23700–23799,
+    /// the next free one on a clash) instead of an arbitrary free one. A
+    /// browser tab on a preview that restarts then finds it again.
+    #[clap(long = "stable-static-port")]
+    pub stable_static_port: bool,
+
     /// Let it not be the primary instance.
     ///
     /// This is hidden from the CLI.

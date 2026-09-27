@@ -22,6 +22,33 @@ use tokio::sync::mpsc;
 use crate::utils::exit_on_ctrl_c;
 
 /// Entry point of the preview tool.
+/// The static file host with a port that is the same for `input` on every run:
+/// the path's hash mapped into 23700–23799, advancing to the next free port on a
+/// clash. Only a `:0` host is changed; a chosen port is kept as it is.
+fn stable_static_host(host: &str, input: Option<&str>) -> String {
+    let Some((addr, "0")) = host.rsplit_once(':') else {
+        return host.to_string();
+    };
+    let Some(input) = input else {
+        return host.to_string();
+    };
+    use std::hash::{Hash, Hasher};
+    let input = std::path::Path::new(input);
+    let path = std::fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    const BASE: u16 = 23700;
+    const SPAN: u16 = 100;
+    let first = (hasher.finish() % SPAN as u64) as u16;
+    for i in 0..SPAN {
+        let port = BASE + (first + i) % SPAN;
+        if std::net::TcpListener::bind((addr, port)).is_ok() {
+            return format!("{addr}:{port}");
+        }
+    }
+    host.to_string()
+}
+
 pub async fn preview_main(args: PreviewCliArgs) -> Result<()> {
     log::info!("Arguments: {args:#?}");
     let handle = tokio::runtime::Handle::current();
@@ -31,7 +58,12 @@ pub async fn preview_main(args: PreviewCliArgs) -> Result<()> {
     let open_in_browser = args.open_in_browser(true);
     let static_file_host =
         if args.static_file_host == args.data_plane_host || !args.static_file_host.is_empty() {
-            Some(args.static_file_host)
+            let host = if args.stable_static_port {
+                stable_static_host(&args.static_file_host, args.compile.input.as_deref())
+            } else {
+                args.static_file_host
+            };
+            Some(host)
         } else {
             None
         };
