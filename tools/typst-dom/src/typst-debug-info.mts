@@ -82,6 +82,11 @@ export function removeSourceMappingHandler(docRoot: HTMLElement) {
     delete (docRoot as any).sourceMappingHandler;
     // console.log("remove removeSourceMappingHandler");
   }
+  const prevLinkHandler = (docRoot as any).linkClickHandler;
+  if (prevLinkHandler) {
+    docRoot.removeEventListener("click", prevLinkHandler, true);
+    delete (docRoot as any).linkClickHandler;
+  }
 }
 
 export function resolveSourceLeaf(
@@ -215,6 +220,24 @@ export function installEditorJumpToHandler(
   });
 
   docRoot.addEventListener("click", sourceMappingHandler);
+
+  // A link the browser cannot open itself (`file:`) is handed to the editor as
+  // an ordinary click-to-source instead; every other link is the browser's
+  // alone and must not move the editor.
+  const linkClickHandler = ((docRoot as any).linkClickHandler = (event: MouseEvent) => {
+    const target = event.target as Element | null;
+    const anchor = target?.closest?.("a[href]");
+    if (!anchor) {
+      return;
+    }
+    const href = anchor.getAttribute("href") || "";
+    if (href.startsWith("file:")) {
+      event.preventDefault();
+    } else {
+      event.stopPropagation();
+    }
+  });
+  docRoot.addEventListener("click", linkClickHandler, true);
 }
 
 export interface TypstDebugJumpDocument {}

@@ -21,17 +21,9 @@ pub fn jump_from_click(
     frame: &Frame,
     click: Point,
 ) -> Option<(SourceSpanOffset, SourceSpanOffset)> {
-    // Try to find a link first.
-    for (pos, item) in frame.items() {
-        if let FrameItem::Link(_dest, size) = item
-            && is_in_rect(*pos, *size, click)
-        {
-            // todo: url reaction
-            return None;
-        }
-    }
-
-    // If there's no link, search for a jump target.
+    // A click inside a link resolves like any other: the page decides which
+    // links are the browser's (and stops those clicks before they get here)
+    // and which are handed to the editor (`file:`).
     for &(mut pos, ref item) in frame.items().rev() {
         match item {
             FrameItem::Group(group) => {
