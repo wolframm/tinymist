@@ -82,11 +82,6 @@ export function removeSourceMappingHandler(docRoot: HTMLElement) {
     delete (docRoot as any).sourceMappingHandler;
     // console.log("remove removeSourceMappingHandler");
   }
-  const prevLinkHandler = (docRoot as any).linkClickHandler;
-  if (prevLinkHandler) {
-    docRoot.removeEventListener("click", prevLinkHandler, true);
-    delete (docRoot as any).linkClickHandler;
-  }
 }
 
 export function resolveSourceLeaf(
@@ -194,6 +189,23 @@ export function installEditorJumpToHandler(
   ) => {
     let elem = event.target! as Element;
 
+    // A click on a link: every link is the browser's — or, for an internal one,
+    // its own onclick's — except a `file:` link, which the browser cannot open
+    // from an http page and which is handed to the editor as a click-to-source
+    // instead. The text-selection layer sits above the anchors, so the anchor
+    // is looked up under the pointer rather than from the event target.
+    const anchor = document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .map((el) => el.closest("a"))
+      .find((a) => a !== null);
+    if (anchor) {
+      const href = anchor.getAttribute("href") || anchor.getAttribute("xlink:href") || "";
+      if (!href.startsWith("file:")) {
+        return;
+      }
+      event.preventDefault();
+    }
+
     const frameLoc = await resolveFrameLoc(event, elem);
     if (!frameLoc) {
       return;
@@ -221,31 +233,6 @@ export function installEditorJumpToHandler(
 
   docRoot.addEventListener("click", sourceMappingHandler);
 
-  // A link the browser cannot open itself (`file:`) is handed to the editor as
-  // an ordinary click-to-source instead; every other link is the browser's
-  // alone and must not move the editor.
-  const linkClickHandler = ((docRoot as any).linkClickHandler = (event: MouseEvent) => {
-    // The text-selection layer sits above the anchors, so the event target is
-    // rarely inside the <a>; look through everything under the pointer.
-    const anchor = document
-      .elementsFromPoint(event.clientX, event.clientY)
-      .map((el) => el.closest("a"))
-      .find((a) => a !== null);
-    if (!anchor) {
-      return;
-    }
-    // SVG anchors carry xlink:href
-    const href = anchor.getAttribute("href") || anchor.getAttribute("xlink:href") || "";
-    if (!href) {
-      return;
-    }
-    if (href.startsWith("file:")) {
-      event.preventDefault();
-    } else {
-      event.stopPropagation();
-    }
-  });
-  docRoot.addEventListener("click", linkClickHandler, true);
 }
 
 export interface TypstDebugJumpDocument {}
