@@ -116,6 +116,22 @@ fn jump_from_cursor_(
         return None;
     };
 
+    // Generated listings — the outline, a list of figures — precede the content
+    // they list and reuse its spans. For a cursor inside a heading the intended
+    // target is the heading itself, i.e. the LAST occurrence of the span.
+    let in_heading = {
+        let mut cur = Some(&node);
+        let mut found = false;
+        while let Some(n) = cur {
+            if n.kind() == SyntaxKind::Heading {
+                found = true;
+                break;
+            }
+            cur = n.parent();
+        }
+        found
+    };
+
     let span = node.span();
     let offset = cursor.saturating_sub(node.offset());
 
@@ -126,6 +142,18 @@ fn jump_from_cursor_(
 
     match document {
         TypstDocument::Paged(paged_doc) => {
+            if in_heading {
+                let last = paged_doc.pages().iter().enumerate().rev().find_map(|(idx, page)| {
+                    find_last_in_frame(&page.frame, span).map(|point| (idx, point))
+                });
+                if let Some((idx, point)) = last {
+                    return Some(vec![Position {
+                        page: NonZeroUsize::new(idx + 1)?,
+                        point,
+                    }]);
+                }
+            }
+
             // We checks whether there are any elements exactly matching the
             // cursor position.
             let mut positions = vec![];
@@ -204,6 +232,31 @@ fn find_in_frame(frame: &Frame, span: Span, min_dis: &mut u64, res: &mut Point) 
     }
 
     None
+}
+
+/// Finds the position of the LAST glyph carrying `span` in a frame, or `None`.
+fn find_last_in_frame(frame: &Frame, span: Span) -> Option<Point> {
+    let mut last = None;
+    for &(mut pos, ref item) in frame.items() {
+        match item {
+            FrameItem::Group(group) => {
+                // TODO: Handle transformation.
+                if let Some(point) = find_last_in_frame(&group.frame, span) {
+                    last = Some(point + pos);
+                }
+            }
+            FrameItem::Text(text) => {
+                for glyph in &text.glyphs {
+                    if glyph.span.0 == span {
+                        last = Some(pos);
+                    }
+                    pos.x += glyph.x_advance.at(text.size);
+                }
+            }
+            _ => {}
+        }
+    }
+    last
 }
 
 /// Whether a rectangle with the given size at the given position contains the
