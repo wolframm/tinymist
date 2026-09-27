@@ -225,8 +225,12 @@ export function installEditorJumpToHandler(
   // an ordinary click-to-source instead; every other link is the browser's
   // alone and must not move the editor.
   const linkClickHandler = ((docRoot as any).linkClickHandler = (event: MouseEvent) => {
-    const target = event.target as Element | null;
-    const anchor = target?.closest?.("a");
+    // The text-selection layer sits above the anchors, so the event target is
+    // rarely inside the <a>; look through everything under the pointer.
+    const anchor = document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .map((el) => el.closest("a"))
+      .find((a) => a !== null);
     if (!anchor) {
       return;
     }
