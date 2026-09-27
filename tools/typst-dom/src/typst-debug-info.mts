@@ -226,11 +226,15 @@ export function installEditorJumpToHandler(
   // alone and must not move the editor.
   const linkClickHandler = ((docRoot as any).linkClickHandler = (event: MouseEvent) => {
     const target = event.target as Element | null;
-    const anchor = target?.closest?.("a[href]");
+    const anchor = target?.closest?.("a");
     if (!anchor) {
       return;
     }
-    const href = anchor.getAttribute("href") || "";
+    // SVG anchors carry xlink:href
+    const href = anchor.getAttribute("href") || anchor.getAttribute("xlink:href") || "";
+    if (!href) {
+      return;
+    }
     if (href.startsWith("file:")) {
       event.preventDefault();
     } else {
