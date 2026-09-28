@@ -279,10 +279,16 @@ export function provideDebugJumpDoc<TBase extends GConstructor<TypstDocumentCont
       const pageAdjustLeft = 5 * pw;
       const pageAdjust = pageWidth - 95 * pw;
 
+      // A hidden page — a tab that is not the active one, or a window that
+      // is covered — runs no smooth scroll at all: the request is dropped.
+      // The editor scrolls a preview it is about to bring to the front, so a
+      // hidden page scrolls instantly and is in place when it appears.
+      const behavior: ScrollBehavior = document.visibilityState === "visible" ? "smooth" : "instant";
+
       // default single-column or multi-column layout
       if (widthOccupied >= 90 || widthOccupied < 50) {
         scrollElem.scrollTo({
-          behavior: "smooth",
+          behavior,
           left: xOffset,
           top: yOffset,
         });
@@ -293,7 +299,7 @@ export function provideDebugJumpDoc<TBase extends GConstructor<TypstDocumentCont
         const xOffsetAdjsut = xOffset > pageAdjust ? pageAdjust : pageAdjustLeft;
 
         scrollElem.scrollTo({
-          behavior: "smooth",
+          behavior,
           left: xOffsetAdjsut,
           top: yOffset,
         });

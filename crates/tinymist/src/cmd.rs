@@ -180,12 +180,12 @@ impl ServerState {
     /// Kill a preview instance.
     #[cfg(feature = "preview")]
     pub fn kill_preview(&mut self, mut args: Vec<JsonValue>) -> AnySchedulableResponse {
-        let task_id = get_arg!(args[0] as String);
-
+        // No task id kills them all; the argument is read only when there is one.
         if args.is_empty() {
             return self.preview.kill_all();
         }
 
+        let task_id = get_arg!(args[0] as String);
         self.preview.kill(task_id)
     }
 
