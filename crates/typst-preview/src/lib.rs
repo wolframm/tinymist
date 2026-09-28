@@ -181,6 +181,9 @@ impl Previewer {
                 }
                 let actor::webview::Channels { svg } =
                     actor::webview::WebviewActor::<'_, C>::set_up_channels();
+                // A scroll the editor asked for while no page was connected
+                // belongs to this page, once it has a document to scroll.
+                let deferred_scroll = h.pending_scroll.lock().take();
                 let webview_actor = actor::webview::WebviewActor::new(
                     conn,
                     svg.1,
@@ -188,6 +191,7 @@ impl Previewer {
                     h.webview_tx.subscribe(),
                     h.editor_tx.clone(),
                     h.renderer_tx.clone(),
+                    deferred_scroll,
                 );
                 match h.format {
                     ExportTarget::Paged => {
@@ -278,6 +282,7 @@ pub struct PreviewBuilder {
     editor_conn: MpScChannel<EditorActorRequest>,
     webview_conn: BroadcastChannel<WebviewActorRequest>,
     doc_sender: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
+    pending_scroll: PendingScrollSlot,
 
     compile_watcher: OnceLock<Arc<CompileWatcher>>,
 }
@@ -291,6 +296,7 @@ impl PreviewBuilder {
             editor_conn: mpsc::unbounded_channel(),
             webview_conn: broadcast::channel(32),
             doc_sender: Arc::new(parking_lot::RwLock::new(None)),
+            pending_scroll: PendingScrollSlot::default(),
             compile_watcher: OnceLock::new(),
         }
     }
@@ -320,6 +326,7 @@ impl PreviewBuilder {
             editor_conn: (editor_tx, editor_rx),
             webview_conn: (webview_tx, _),
             doc_sender,
+            pending_scroll,
             ..
         } = self;
 
@@ -335,6 +342,7 @@ impl PreviewBuilder {
             renderer_mailbox.0.clone(),
             webview_tx.clone(),
             span_interner.clone(),
+            pending_scroll.clone(),
         );
         let control_plane_handle = tokio::spawn(editor_actor.run());
         log::info!("Previewer: editor actor spawned");
@@ -349,6 +357,7 @@ impl PreviewBuilder {
             renderer_tx: renderer_mailbox.0.clone(),
             enable_partial_rendering: config.enable_partial_rendering,
             doc_sender,
+            pending_scroll,
         };
 
         Previewer {
@@ -453,7 +462,28 @@ pub struct DocToSrcJumpInfo {
     pub filepath: String,
     pub start: Option<(usize, usize)>, // row, column
     pub end: Option<(usize, usize)>,
+    /// The click landed on a link into another document, and this is the
+    /// linked place in that document rather than the link's own source. An
+    /// editor may open the target without taking focus, and bring the target's
+    /// own preview along.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cross_document: bool,
 }
+
+/// A scroll request that no page has received yet: the editor asked for it
+/// while no page was connected. The next page to connect gets it once it has
+/// its first document.
+#[derive(Debug, Clone)]
+pub enum PendingScroll {
+    /// `panelScrollTo`: a source position still to be resolved.
+    Source(ResolveSourceLocRequest),
+    /// `panelScrollByPosition`: a document position.
+    Position(DocumentPosition),
+}
+
+/// The slot holding a [`PendingScroll`], shared by the editor actor (which
+/// fills it) and the data plane (which hands it to the next page).
+pub type PendingScrollSlot = Arc<parking_lot::Mutex<Option<PendingScroll>>>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChangeCursorPositionRequest {
@@ -540,6 +570,12 @@ pub trait CompileView: Send + Sync {
     fn resolve_span(&self, _s: Span, _offset: Option<usize>) -> Option<DocToSrcJumpInfo> {
         None
     }
+
+    /// Resolve a span that lies inside a link into another document to the
+    /// linked place in that document. `None` when the span is no such link.
+    fn resolve_cross_document_link(&self, _s: Span, _offset: usize) -> Option<DocToSrcJumpInfo> {
+        None
+    }
 }
 
 pub struct CompileWatcher {
@@ -606,6 +642,7 @@ struct DataPlane {
     invert_colors: String,
     renderer_tx: broadcast::Sender<RenderActorRequest>,
     doc_sender: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
+    pending_scroll: PendingScrollSlot,
 }
 
 /// The invert colors for the preview.

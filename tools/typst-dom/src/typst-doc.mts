@@ -53,7 +53,8 @@ interface TypstPosition {
 export interface TypstDomWindowElement extends HTMLElement {
   initTypstSvg(docRoot: SVGElement): void;
   currentPosition(elem: Element): TypstPosition | undefined;
-  handleTypstLocation(elem: Element, page: number, x: number, y: number): void;
+  /// Returns whether the page was there to scroll to (false before it has rendered).
+  handleTypstLocation(elem: Element, page: number, x: number, y: number): boolean;
   documents: any[];
   typstWebsocket: Sendable;
 }

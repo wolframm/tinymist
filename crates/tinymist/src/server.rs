@@ -256,6 +256,10 @@ impl ServerState {
             // User commands
             .with_command("tinymist.startDefaultPreview", State::default_preview)
             .with_command("tinymist.scrollPreview", State::scroll_preview)
+            .with_command(
+                "tinymist.resolveCrossDocumentLink",
+                State::resolve_cross_document_link,
+            )
             // Internal commands
             .with_command("tinymist.doStartPreview", State::do_start_preview)
             .with_command("tinymist.doStartBrowsingPreview", State::browse_preview)

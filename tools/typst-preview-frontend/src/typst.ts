@@ -244,11 +244,18 @@ windowElem.currentPosition = function (elem: Element) {
   return result;
 };
 
-windowElem.handleTypstLocation = function (elem: Element, pageNo: number, x: number, y: number) {
+// Returns whether the page is there to scroll to: a document that has not
+// rendered yet, or not up to that page, gives false and the caller retries.
+windowElem.handleTypstLocation = function (
+  elem: Element,
+  pageNo: number,
+  x: number,
+  y: number,
+): boolean {
   const docRoot = findAncestor(elem, "typst-doc");
   if (!docRoot) {
     console.warn("no typst-doc found", elem);
-    return;
+    return false;
   }
 
   // scrollTo(pageRect: ScrollRect, pageNo: number, innerLeft: number, innerTop: number)
@@ -276,7 +283,7 @@ windowElem.handleTypstLocation = function (elem: Element, pageNo: number, x: num
 
     if (!pageMapping.has(pageNo)) {
       console.warn("page not found in canvas mode", pageNo, pageMapping);
-      return;
+      return false;
     }
 
     const canvasContainer = pageMapping.get(pageNo)!.firstElementChild!;
@@ -302,7 +309,7 @@ windowElem.handleTypstLocation = function (elem: Element, pageNo: number, x: num
     console.log("canvas mode jump", left, top, canvasRect, dataWidth, dataHeight, x, y);
 
     scrollTo(canvasRect.width, pageNo, left, top);
-    return;
+    return true;
   }
 
   const children = docRoot.children;
@@ -337,9 +344,10 @@ windowElem.handleTypstLocation = function (elem: Element, pageNo: number, x: num
       const top = svgRect.top + (y / dataHeight) * svgRect.height;
 
       scrollTo(pageRect.width, pageNo, left, top);
-      return;
+      return true;
     }
   }
+  return false;
 };
 // This global function is hardcoded in:
 // https://github.com/Myriad-Dreamin/typst.ts/blob/crates/conversion/typst2vec/src/pass/typst2vec.rs

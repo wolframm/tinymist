@@ -317,6 +317,29 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     setTimeout(probe, 500);
   }
 
+  // A scroll request can arrive before the document, or the page it names, has
+  // rendered: a preview that has just started, or a document that grew. Keep
+  // the request and retry until the page is there; a newer request replaces
+  // it.
+  let latestLocation = 0;
+  function scrollToLocation(page: number, x: number, y: number) {
+    const token = ++latestLocation;
+    let tries = 0;
+    const attempt = () => {
+      if (token !== latestLocation) {
+        return;
+      }
+      const rootElem = document.getElementById("typst-app")?.firstElementChild;
+      if (rootElem && windowElem.handleTypstLocation(rootElem, page, x, y)) {
+        return;
+      }
+      if (++tries < 100) {
+        setTimeout(attempt, 100);
+      }
+    };
+    attempt();
+  }
+
   function setupSocket(svgDoc: TypstDocument): () => void {
     windowElem.documents.push(svgDoc);
 
@@ -480,11 +503,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           }
         }
 
-        if (rootElem) {
-          /// Note: when it is really scrolled, it will trigger `svgDoc.addViewportChange`
-          /// via `window.onscroll` event
-          windowElem.handleTypstLocation(rootElem, pageToJump, x, y);
-        }
+        /// Note: when it is really scrolled, it will trigger `svgDoc.addViewportChange`
+        /// via `window.onscroll` event
+        scrollToLocation(pageToJump, x, y);
         return;
       } else if (message[0] === "cursor") {
         // todo: aware height padding

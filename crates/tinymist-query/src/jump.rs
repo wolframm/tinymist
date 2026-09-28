@@ -9,10 +9,101 @@ use typst::{
     World,
     introspection::PagedPosition as Position,
     layout::{Frame, FrameItem, Point, Size},
-    syntax::{LinkedNode, Side, Source, Span, SyntaxKind},
+    syntax::{LinkedNode, Side, Source, Span, SyntaxKind, ast},
     visualize::Geometry,
 };
-use typst_shim::syntax::LinkedNodeExt;
+use typst_shim::syntax::{LinkedNodeExt, resolve_path_from_id};
+
+/// The place a link into another document points at: the target document and
+/// the byte offset to land on in it (0 when the link names no label).
+pub struct CrossDocumentTarget {
+    /// The document the link points into.
+    pub source: Source,
+    /// The byte offset in it to land on.
+    pub offset: usize,
+}
+
+/// Resolves the link into another document that `cursor` sits in, if any.
+///
+/// Such a link is a call whose first positional argument is a `.typ` path
+/// string and which may carry `label: <l>`, for instance a house template's
+/// `#doclink("materials.typ", label: <s06>)[§~6]`. The landing is the heading
+/// carrying that label, on the first character of its text; a label on its own
+/// line under the heading counts as the heading's.
+pub fn jump_from_cross_document_link(
+    world: &LspWorld,
+    source: &Source,
+    cursor: usize,
+) -> Option<CrossDocumentTarget> {
+    let root = LinkedNode::new(source.root());
+    let leaf = root
+        .leaf_at_compat(cursor)
+        .or_else(|| root.leaf_at(cursor, Side::After))?;
+    let (file, label) = std::iter::successors(Some(leaf), |n| n.parent().cloned())
+        .filter(|n| n.kind() == SyntaxKind::FuncCall)
+        .find_map(|n| n.cast::<ast::FuncCall>().and_then(cross_document_args))?;
+    let target = resolve_path_from_id(source.id(), &file).ok()?.intern();
+    let target = world.source(target).ok()?;
+    let offset = label.map_or(0, |label| landing(&target, &label));
+    Some(CrossDocumentTarget {
+        source: target,
+        offset,
+    })
+}
+
+/// The `.typ` path and the label a cross-document call names, or `None` when
+/// the call is not one.
+fn cross_document_args(call: ast::FuncCall) -> Option<(String, Option<String>)> {
+    let mut file = None;
+    let mut label = None;
+    for arg in call.args().items() {
+        match arg {
+            ast::Arg::Pos(ast::Expr::Str(s)) if file.is_none() => file = Some(s.get().to_string()),
+            ast::Arg::Named(named) if named.name().get().as_str() == "label" => {
+                if let ast::Expr::Label(l) = named.expr() {
+                    label = Some(l.get().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    let file = file?;
+    file.ends_with(".typ").then_some((file, label))
+}
+
+/// The byte offset in `target` to land on for `label`: the first character of
+/// the labelled heading's text; the label itself when it labels something else;
+/// the top of the document when it is not there.
+fn landing(target: &Source, label: &str) -> usize {
+    let root = LinkedNode::new(target.root());
+    let Some(node) = find_label(&root, label) else {
+        return 0;
+    };
+    let heading = std::iter::successors(Some(node.clone()), |n| n.parent().cloned())
+        .find(|n| n.kind() == SyntaxKind::Heading)
+        .or_else(|| {
+            node.prev_sibling()
+                .filter(|n| n.kind() == SyntaxKind::Heading)
+        });
+    match heading {
+        Some(heading) => heading
+            .children()
+            .find(|c| !matches!(c.kind(), SyntaxKind::HeadingMarker | SyntaxKind::Space))
+            .map_or(heading.offset(), |c| c.offset()),
+        None => node.offset(),
+    }
+}
+
+fn find_label<'a>(node: &LinkedNode<'a>, label: &str) -> Option<LinkedNode<'a>> {
+    if node.kind() == SyntaxKind::Label
+        && node
+            .cast::<ast::Label>()
+            .is_some_and(|l| l.get() == label)
+    {
+        return Some(node.clone());
+    }
+    node.children().find_map(|child| find_label(&child, label))
+}
 
 /// Finds a span range from a clicked physical position in a rendered paged
 /// document.

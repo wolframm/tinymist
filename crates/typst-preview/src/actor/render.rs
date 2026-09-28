@@ -173,6 +173,15 @@ impl RenderActor {
 
     fn resolve_span_range(&self, range: Range<SourceSpanOffset>) -> Option<DocToSrcJumpInfo> {
         let view = self.view()?;
+
+        // A click on a link into another document goes to the linked place in
+        // that document, not to the link's own source.
+        if let Some(target) =
+            view.resolve_cross_document_link(range.start.span, range.start.offset)
+        {
+            return Some(target);
+        }
+
         // Resolves FileLoC of start, end, and the element wide
         let st_res = view.resolve_span(range.start.span, Some(range.start.offset));
         let ed_res = view.resolve_span(range.end.span, Some(range.end.offset));
@@ -188,6 +197,7 @@ impl RenderActor {
                         filepath: st.filepath,
                         start: st.start,
                         end: ed.start,
+                        cross_document: false,
                     })
                 } else {
                     Some(ed)

@@ -189,6 +189,37 @@ impl ServerState {
         self.preview.kill(task_id)
     }
 
+    /// Resolves the link into another document at a position:
+    /// `[path, {line, character}]` → the jump info for the linked place in the
+    /// target document, or `null` when the position is not in such a link. The
+    /// same resolution a click on the link in a preview gets.
+    #[cfg(feature = "preview")]
+    pub fn resolve_cross_document_link(
+        &mut self,
+        mut args: Vec<JsonValue>,
+    ) -> AnySchedulableResponse {
+        use crate::tool::preview::cross_document_jump;
+        use tinymist_query::{LspPosition, to_typst_position};
+        use typst::World;
+
+        let path = get_arg!(args[0] as PathBuf);
+        let pos = get_arg!(args[1] as LspPosition);
+        let encoding = self.const_config().position_encoding;
+        let snap = self.snapshot().map_err(internal_error)?;
+
+        just_future(async move {
+            let world = snap.world();
+            let jump = world
+                .id_for_path(&path)
+                .and_then(|id| world.source(id).ok())
+                .and_then(|source| {
+                    let cursor = to_typst_position(pos, encoding, &source)?;
+                    cross_document_jump(world, &source, cursor)
+                });
+            serde_json::to_value(jump).map_err(|e| internal_error(e.to_string()))
+        })
+    }
+
     /// Scroll preview instances.
     #[cfg(feature = "preview")]
     pub fn scroll_preview(&mut self, mut args: Vec<JsonValue>) -> AnySchedulableResponse {

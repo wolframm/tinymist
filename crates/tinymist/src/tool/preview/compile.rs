@@ -7,8 +7,8 @@ use reflexo_typst::{error::prelude::*, Bytes, Error, TypstDocument};
 use tinymist_preview::{
     CompileStatus, DocToSrcJumpInfo, EditorServer, Location, MemoryFiles, MemoryFilesShort,
 };
-use tinymist_project::LspCompiledArtifact;
-use tinymist_query::{jump_from_click, jump_from_cursor};
+use tinymist_project::{LspCompiledArtifact, LspWorld};
+use tinymist_query::{jump_from_click, jump_from_cross_document_link, jump_from_cursor};
 use typst::introspection::PagedPosition as Position;
 use typst::layout::{Abs, Point};
 use typst::syntax::{LinkedNode, Source, Span, SyntaxKind};
@@ -198,6 +198,37 @@ impl tinymist_preview::CompileView for PreviewCompileView {
             filepath: filepath.to_string_lossy().to_string(),
             start: resolve_off(&source, range.start),
             end: resolve_off(&source, range.end),
+            cross_document: false,
         })
     }
+
+    fn resolve_cross_document_link(&self, span: Span, offset: usize) -> Option<DocToSrcJumpInfo> {
+        let world = self.art.world();
+        let source = world.source(span.id()?).ok()?;
+        let node = source.find(span)?;
+        let cursor = node.offset() + offset.min(node.len());
+        cross_document_jump(world, &source, cursor)
+    }
+}
+
+/// The jump for the link into another document at `cursor` in `source`: the
+/// linked place in the target document, flagged `cross_document`. `None` when
+/// the cursor is not in such a link.
+pub fn cross_document_jump(
+    world: &LspWorld,
+    source: &Source,
+    cursor: usize,
+) -> Option<DocToSrcJumpInfo> {
+    let target = jump_from_cross_document_link(world, source, cursor)?;
+    let filepath = world.path_for_id(target.source.id()).ok()?.to_err().ok()?;
+    let lines = target.source.lines();
+    let at = lines
+        .byte_to_line(target.offset)
+        .zip(lines.byte_to_column(target.offset));
+    Some(DocToSrcJumpInfo {
+        filepath: filepath.to_string_lossy().to_string(),
+        start: at,
+        end: at,
+        cross_document: true,
+    })
 }

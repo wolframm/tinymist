@@ -4,7 +4,9 @@ use tinymist_std::error::IgnoreLogging;
 use tokio::sync::{broadcast, mpsc};
 
 use super::{editor::EditorActorRequest, render::RenderActorRequest};
-use crate::{ViewerWindowStateMessage, WsMessage, actor::editor::DocToSrcJumpResolveRequest};
+use crate::{
+    PendingScroll, ViewerWindowStateMessage, WsMessage, actor::editor::DocToSrcJumpResolveRequest,
+};
 
 // pub type CursorPosition = DocumentPosition;
 pub type SrcToDocJumpInfo = DocumentPosition;
@@ -40,6 +42,9 @@ pub struct WebviewActor<'a, C> {
     broadcast_sender: broadcast::Sender<WebviewActorRequest>,
     editor_sender: mpsc::UnboundedSender<EditorActorRequest>,
     render_sender: broadcast::Sender<RenderActorRequest>,
+    /// A scroll the editor requested before this page connected; sent once the
+    /// page has its first document.
+    deferred_scroll: Option<PendingScroll>,
 }
 
 pub struct Channels {
@@ -66,6 +71,7 @@ where
         mailbox: broadcast::Receiver<WebviewActorRequest>,
         editor_sender: mpsc::UnboundedSender<EditorActorRequest>,
         render_sender: broadcast::Sender<RenderActorRequest>,
+        deferred_scroll: Option<PendingScroll>,
     ) -> Self {
         Self {
             webview_websocket_conn: websocket_conn,
@@ -74,6 +80,28 @@ where
             broadcast_sender,
             editor_sender,
             render_sender,
+            deferred_scroll,
+        }
+    }
+
+    /// Replays the scroll that was waiting for this page. The page itself
+    /// retries the scroll until the requested page has rendered.
+    fn flush_deferred_scroll(&mut self) {
+        let Some(scroll) = self.deferred_scroll.take() else {
+            return;
+        };
+        log::info!("WebviewActor: replaying the scroll requested before the page connected");
+        match scroll {
+            PendingScroll::Source(req) => {
+                self.render_sender
+                    .send(RenderActorRequest::ResolveSourceLoc(req))
+                    .log_error("WebviewActor");
+            }
+            PendingScroll::Position(pos) => {
+                self.broadcast_sender
+                    .send(WebviewActorRequest::ViewportPosition(pos))
+                    .log_error("WebviewActor");
+            }
         }
     }
 
@@ -100,6 +128,7 @@ where
                     let _scope = typst_timing::TimingScope::new("webview_actor_send_svg");
                     self.webview_websocket_conn.send(WsMessage::Binary(svg.into()))
                     .await.log_error("WebViewActor");
+                    self.flush_deferred_scroll();
                 }
                 Some(msg) = self.webview_websocket_conn.next() => {
                     log::trace!("WebviewActor: received message from websocket: {msg:?}");

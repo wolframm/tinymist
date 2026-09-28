@@ -11,7 +11,7 @@ use crate::debug_loc::{InternQuery, SpanInterner};
 use crate::outline::Outline;
 use crate::{
     ChangeCursorPositionRequest, DocToSrcJumpInfo, EditorServer, MemoryFiles, MemoryFilesShort,
-    ResolveSourceLocRequest, ViewerWindowStateMessage,
+    PendingScroll, PendingScrollSlot, ResolveSourceLocRequest, ViewerWindowStateMessage,
 };
 
 use super::webview::WebviewActorRequest;
@@ -115,6 +115,8 @@ pub struct EditorActor<T> {
     webview_sender: broadcast::Sender<WebviewActorRequest>,
 
     span_interner: SpanInterner,
+    /// Where a scroll request goes when no page is there to receive it.
+    pending_scroll: PendingScrollSlot,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -159,6 +161,7 @@ impl<T: EditorServer> EditorActor<T> {
         renderer_sender: broadcast::Sender<RenderActorRequest>,
         webview_sender: broadcast::Sender<WebviewActorRequest>,
         span_interner: SpanInterner,
+        pending_scroll: PendingScrollSlot,
     ) -> Self {
         Self {
             server,
@@ -168,6 +171,7 @@ impl<T: EditorServer> EditorActor<T> {
             webview_sender,
 
             span_interner,
+            pending_scroll,
         }
     }
 
@@ -219,13 +223,24 @@ impl<T: EditorServer> EditorActor<T> {
                                 cursor_info.character,
                             );
                         }
+                        // A broadcast with no receiver means no page is connected (each
+                        // page brings its own render actor). Such a scroll is kept for
+                        // the next page instead of being dropped: the editor typically
+                        // asks for it right after starting the preview, before the
+                        // browser has opened the page.
                         ControlPlaneMessage::ResolveSourceLoc(jump_info) => {
                             log::debug!("EditorActor: received message from editor: {jump_info:?}");
-                            self.renderer_sender.send(RenderActorRequest::ResolveSourceLoc(jump_info)).log_error("EditorActor");
+                            if self.renderer_sender.send(RenderActorRequest::ResolveSourceLoc(jump_info.clone())).is_err() {
+                                log::debug!("EditorActor: no page connected, keeping the scroll request");
+                                *self.pending_scroll.lock() = Some(PendingScroll::Source(jump_info));
+                            }
                         }
                         ControlPlaneMessage::PanelScrollByPosition(jump_info) => {
                             log::debug!("EditorActor: received message from editor: {jump_info:?}");
-                            self.webview_sender.send(WebviewActorRequest::ViewportPosition(jump_info.position)).log_error("EditorActor");
+                            if self.webview_sender.send(WebviewActorRequest::ViewportPosition(jump_info.position)).is_err() {
+                                log::debug!("EditorActor: no page connected, keeping the scroll request");
+                                *self.pending_scroll.lock() = Some(PendingScroll::Position(jump_info.position));
+                            }
                         }
                         ControlPlaneMessage::DocToSrcJumpResolve(jump_info) => {
                             log::debug!("EditorActor: received message from editor: {jump_info:?}");

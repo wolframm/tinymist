@@ -1,6 +1,33 @@
 //! Document preview tool for Typst
 
-pub use compile::{PreviewCompileView, ProjectPreviewHandler};
+pub use compile::{PreviewCompileView, ProjectPreviewHandler, cross_document_jump};
+
+/// The static file host with a port that is the same for `input` on every run:
+/// the path's hash mapped into 23700–23799, advancing to the next free port on a
+/// clash. Only a `:0` host is changed; a chosen port is kept as it is.
+pub fn stable_static_host(host: &str, input: Option<&str>) -> String {
+    let Some((addr, "0")) = host.rsplit_once(':') else {
+        return host.to_string();
+    };
+    let Some(input) = input else {
+        return host.to_string();
+    };
+    use std::hash::{Hash, Hasher};
+    let input = std::path::Path::new(input);
+    let path = std::fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    const BASE: u16 = 23700;
+    const SPAN: u16 = 100;
+    let first = (hasher.finish() % SPAN as u64) as u16;
+    for i in 0..SPAN {
+        let port = BASE + (first + i) % SPAN;
+        if std::net::TcpListener::bind((addr, port)).is_ok() {
+            return format!("{addr}:{port}");
+        }
+    }
+    host.to_string()
+}
 pub use http::{make_http_server, HttpServer};
 
 mod compile;
@@ -462,6 +489,14 @@ impl PreviewState {
             return Err(internal_error("--static-file-host is removed"));
         }
 
+        // In this mode the page and the data plane share one address, so the
+        // stable port applies to it.
+        let data_plane_host = if args.stable_static_port {
+            stable_static_host(&args.data_plane_host, args.compile.input.as_deref())
+        } else {
+            args.data_plane_host.clone()
+        };
+
         let (lsp_tx, lsp_rx) = ControlPlaneTx::new(false);
         let ControlPlaneRx {
             resp_rx,
@@ -546,7 +581,7 @@ impl PreviewState {
                 &page_title,
             );
 
-            let srv = make_http_server(frontend_html, args.data_plane_host, websocket_tx).await;
+            let srv = make_http_server(frontend_html, data_plane_host, websocket_tx).await;
             let addr = srv.addr;
             log::info!(
                 target: crate::PREVIEW_COMPAT_LOG_TARGET,
