@@ -92,8 +92,12 @@ pub async fn preview_main(args: PreviewCliArgs) -> Result<()> {
     let control_plane_server_handle = tokio::spawn(async move {
         let (control_sock_tx, mut control_sock_rx) = mpsc::unbounded_channel();
 
-        let srv =
-            make_http_server(String::default(), args.control_plane_host, control_sock_tx).await;
+        let srv = make_http_server(String::default(), args.control_plane_host, control_sock_tx)
+            .await
+            .unwrap_or_else(|err| {
+                log::error!("{err}");
+                std::process::exit(1)
+            });
         log::info!(
             target: PREVIEW_COMPAT_LOG_TARGET,
             "Control panel server listening on: {}",
@@ -191,12 +195,12 @@ pub async fn preview_main(args: PreviewCliArgs) -> Result<()> {
             "--static-file-host is deprecated, which will be removed in the future. Use --data-plane-host instead."
         );
         let html = frontend_html.clone();
-        Some(make_http_server(html, static_file_host, websocket_tx.clone()).await)
+        Some(make_http_server(html, static_file_host, websocket_tx.clone()).await?)
     } else {
         None
     };
 
-    let srv = make_http_server(frontend_html, args.data_plane_host, websocket_tx).await;
+    let srv = make_http_server(frontend_html, args.data_plane_host, websocket_tx).await?;
     log::info!(
         target: PREVIEW_COMPAT_LOG_TARGET,
         "Data plane server listening on: {}",

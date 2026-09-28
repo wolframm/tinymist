@@ -117,6 +117,8 @@ pub struct EditorActor<T> {
     span_interner: SpanInterner,
     /// Where a scroll request goes when no page is there to receive it.
     pending_scroll: PendingScrollSlot,
+    /// The last jump sent to the editor and when, to send a click once.
+    last_jump: Option<(DocToSrcJumpInfo, std::time::Instant)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,7 +174,21 @@ impl<T: EditorServer> EditorActor<T> {
 
             span_interner,
             pending_scroll,
+            last_jump: None,
         }
+    }
+
+    /// Whether `jump` repeats the jump just sent. Every connected page has a
+    /// renderer of its own and each resolves the same click, so with two pages
+    /// open a click would reach the editor twice — and start a second preview
+    /// on the same port when it is a cross-document one.
+    fn is_repeated_jump(&mut self, jump: &DocToSrcJumpInfo) -> bool {
+        let now = std::time::Instant::now();
+        let repeated = self.last_jump.as_ref().is_some_and(|(last, at)| {
+            last == jump && now.duration_since(*at) < std::time::Duration::from_millis(300)
+        });
+        self.last_jump = Some((jump.clone(), now));
+        repeated
     }
 
     pub async fn run(mut self) {
@@ -190,7 +206,11 @@ impl<T: EditorServer> EditorActor<T> {
                             break;
                         },
                         EditorActorRequest::DocToSrcJump(jump_info) => {
-                            self.editor_conn.resp_ctl_plane("DocToSrcJump", ControlPlaneResponse::EditorScrollTo(jump_info)).await
+                            if self.is_repeated_jump(&jump_info) {
+                                true
+                            } else {
+                                self.editor_conn.resp_ctl_plane("DocToSrcJump", ControlPlaneResponse::EditorScrollTo(jump_info)).await
+                            }
                         },
                         EditorActorRequest::ViewerWindowState(state) => {
                             self.editor_conn.resp_ctl_plane("ViewerWindowState", ControlPlaneResponse::ViewerWindowState(state)).await

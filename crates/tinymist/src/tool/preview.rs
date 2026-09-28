@@ -581,7 +581,9 @@ impl PreviewState {
                 &page_title,
             );
 
-            let srv = make_http_server(frontend_html, data_plane_host, websocket_tx).await;
+            let srv = make_http_server(frontend_html, data_plane_host, websocket_tx)
+                .await
+                .map_err(|err| internal_error(err.to_string()))?;
             let addr = srv.addr;
             log::info!(
                 target: crate::PREVIEW_COMPAT_LOG_TARGET,

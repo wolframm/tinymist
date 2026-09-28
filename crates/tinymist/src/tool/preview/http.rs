@@ -9,7 +9,7 @@ use hyper_tungstenite::HyperWebsocket;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
 use lsp_types::Url;
-use tinymist_std::error::IgnoreLogging;
+use tinymist_std::error::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 
 /// created by `make_http_server`
@@ -22,20 +22,26 @@ pub struct HttpServer {
     pub join: tokio::task::JoinHandle<()>,
 }
 
-/// Create a http server for the previewer.
+/// Create a http server for the previewer. An address that cannot be bound is
+/// an error for the caller, not a panic: in the language server a panic takes
+/// every preview and the server itself down.
 pub async fn make_http_server(
     frontend_html: String,
     static_file_addr: String,
     websocket_tx: mpsc::UnboundedSender<HyperWebsocket>,
-) -> HttpServer {
+) -> Result<HttpServer> {
     use http_body_util::Full;
     use hyper::body::{Bytes, Incoming};
     type Server = hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>;
 
     let listener = tokio::net::TcpListener::bind(&static_file_addr)
         .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
+        .map_err(|err| {
+            error_once!("cannot bind the preview server", addr: static_file_addr.clone(), err: err.to_string())
+        })?;
+    let addr = listener
+        .local_addr()
+        .map_err(|err| error_once!("cannot read the preview server's address", err: err.to_string()))?;
     log::info!("preview server listening on http://{addr}");
 
     let frontend_html = hyper::body::Bytes::from(frontend_html);
@@ -161,11 +167,11 @@ pub async fn make_http_server(
         log::info!("Preview server joined");
     });
 
-    HttpServer {
+    Ok(HttpServer {
         addr,
         shutdown_tx,
         join,
-    }
+    })
 }
 
 fn is_valid_origin(h: &HeaderValue, static_file_addr: &str, expected_port: u16) -> bool {

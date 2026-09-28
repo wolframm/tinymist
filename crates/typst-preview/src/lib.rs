@@ -457,7 +457,7 @@ pub trait EditorServer: Send + Sync + 'static {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocToSrcJumpInfo {
     pub filepath: String,
     pub start: Option<(usize, usize)>, // row, column
