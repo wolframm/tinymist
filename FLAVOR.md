@@ -10,8 +10,10 @@ and the LSP both run it.
   Each fix is also a PR upstream where one makes sense; when upstream merges one, the
   rebase drops it by itself.
 - `origin` = github.com/wolframm/tinymist (the fork), `upstream` = Myriad-Dreamin/tinymist.
-- `.toolchain/` — rustup, cargo home, npm and yarn caches. Nothing of the build lives
-  outside this folder except the installed binary. Excluded from git via `.git/info/exclude`.
+- `.toolchain.nosync/` — rustup, cargo home, npm and yarn caches; `target.nosync/` — cargo's
+  output. Nothing of the build lives outside this folder except the installed binary. The
+  `.nosync` suffix keeps them out of iCloud Drive (Documents is synced) and the Documents mirror
+  skips them; both are excluded from git via `.git/info/exclude`.
 - `rebuild.sh` — rebase onto the newest release, build the preview page, build the
   binary with that page bundled, install. `./rebuild.sh --build` skips the rebase.
 

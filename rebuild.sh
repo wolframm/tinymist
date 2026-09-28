@@ -1,7 +1,8 @@
 #!/bin/zsh
 # rebuild.sh — build and install the tinymist flavor: an upstream release tag plus
 # the fixes on the `flavor` branch. Everything (Rust toolchain, cargo registry, npm
-# and yarn caches, build output) stays inside this folder.
+# and yarn caches, build output) stays inside this folder, in `.nosync` folders: those
+# iCloud Drive leaves on this Mac, and the Documents mirror skips them too.
 #
 #   ./rebuild.sh            rebase `flavor` onto the newest upstream release, build, install
 #   ./rebuild.sh v0.15.8    the same onto a named release tag
@@ -12,8 +13,9 @@
 set -euo pipefail
 
 C=${0:A:h}
-T=$C/.toolchain
+T=$C/.toolchain.nosync
 export RUSTUP_HOME=$T/rustup CARGO_HOME=$T/cargo PATH=$T/cargo/bin:$PATH
+export CARGO_TARGET_DIR=$C/target.nosync
 export npm_config_cache=$T/npm-cache YARN_CACHE_FOLDER=$T/yarn-cache
 cd "$C"
 
@@ -58,7 +60,7 @@ grep -q 'e.metaKey || e.ctrlKey || e.altKey' crates/tinymist-assets/src/typst-pr
 # The flavor branch un-comments the `tinymist-assets = { path = ... }` patch in
 # Cargo.toml, so this bundles the page built above rather than the crates.io one.
 cargo build --release -p tinymist-cli
-bin=target/release/tinymist
+bin=$CARGO_TARGET_DIR/release/tinymist
 # (grep -c, not -q: under pipefail an early exit of grep -q fails the pipeline)
 [[ $(strings -a "$bin" | grep -c 'waitForServerThenReload') -gt 0 ]] \
   || { echo "binary lacks the flavor preview page" >&2; exit 1; }
