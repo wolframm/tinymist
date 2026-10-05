@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use tinymist_std::typst::TypstDocument;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use super::render::RenderActorRequest;
 use crate::CompileView;
 
 pub struct HtmlRenderActor {
     mailbox: broadcast::Receiver<RenderActorRequest>,
+    /// Closes when the actor's page disconnects.
+    page_gone: watch::Receiver<()>,
     view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     frame_sender: mpsc::UnboundedSender<Vec<u8>>,
 }
@@ -15,11 +17,13 @@ pub struct HtmlRenderActor {
 impl HtmlRenderActor {
     pub fn new(
         mailbox: broadcast::Receiver<RenderActorRequest>,
+        page_gone: watch::Receiver<()>,
         view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         frame_sender: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Self {
         Self {
             mailbox,
+            page_gone,
             view,
             frame_sender,
         }
@@ -27,7 +31,15 @@ impl HtmlRenderActor {
 
     pub async fn run(mut self) {
         loop {
-            match self.mailbox.recv().await {
+            let msg = tokio::select! {
+                biased;
+                _ = self.page_gone.changed() => {
+                    log::info!("HtmlRenderActor: the page is gone");
+                    break;
+                }
+                msg = self.mailbox.recv() => msg,
+            };
+            match msg {
                 Ok(
                     RenderActorRequest::RenderFullLatest | RenderActorRequest::RenderIncremental,
                 ) => {}

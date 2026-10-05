@@ -199,6 +199,7 @@ impl tinymist_preview::CompileView for PreviewCompileView {
             start: resolve_off(&source, range.start),
             end: resolve_off(&source, range.end),
             cross_document: false,
+            label: None,
         })
     }
 
@@ -230,5 +231,6 @@ pub fn cross_document_jump(
         start: at,
         end: at,
         cross_document: true,
+        label: target.label,
     })
 }

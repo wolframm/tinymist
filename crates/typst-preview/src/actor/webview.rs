@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::{SinkExt, StreamExt};
 use reflexo_typst::debug_loc::DocumentPosition;
 use tinymist_std::error::IgnoreLogging;
@@ -5,7 +7,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::{editor::EditorActorRequest, render::RenderActorRequest};
 use crate::{
-    PendingScroll, ViewerWindowStateMessage, WsMessage, actor::editor::DocToSrcJumpResolveRequest,
+    CompileView, PendingScroll, ViewerWindowStateMessage, WsMessage,
+    actor::editor::DocToSrcJumpResolveRequest,
 };
 
 // pub type CursorPosition = DocumentPosition;
@@ -42,8 +45,11 @@ pub struct WebviewActor<'a, C> {
     broadcast_sender: broadcast::Sender<WebviewActorRequest>,
     editor_sender: mpsc::UnboundedSender<EditorActorRequest>,
     render_sender: broadcast::Sender<RenderActorRequest>,
-    /// A scroll the editor requested before this page connected; sent once the
-    /// page has its first document.
+    /// The compiled document, for the labels the page asks to land on.
+    view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
+    /// A scroll requested before this page had a document: by the editor
+    /// before the page connected, or by the page's address before the first
+    /// compile. Sent once the page has its first document.
     deferred_scroll: Option<PendingScroll>,
 }
 
@@ -71,6 +77,7 @@ where
         mailbox: broadcast::Receiver<WebviewActorRequest>,
         editor_sender: mpsc::UnboundedSender<EditorActorRequest>,
         render_sender: broadcast::Sender<RenderActorRequest>,
+        view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         deferred_scroll: Option<PendingScroll>,
     ) -> Self {
         Self {
@@ -80,18 +87,20 @@ where
             broadcast_sender,
             editor_sender,
             render_sender,
+            view,
             deferred_scroll,
         }
     }
 
     /// Replays the scroll that was waiting for this page. The page itself
     /// retries the scroll until the requested page has rendered.
-    fn flush_deferred_scroll(&mut self) {
+    async fn flush_deferred_scroll(&mut self) {
         let Some(scroll) = self.deferred_scroll.take() else {
             return;
         };
-        log::info!("WebviewActor: replaying the scroll requested before the page connected");
+        log::info!("WebviewActor: replaying the scroll requested before the page had a document");
         match scroll {
+            PendingScroll::Label(label) => self.jump_to_label(label).await,
             PendingScroll::Source(req) => {
                 self.render_sender
                     .send(RenderActorRequest::ResolveSourceLoc(req))
@@ -103,6 +112,33 @@ where
                     .log_error("WebviewActor");
             }
         }
+    }
+
+    /// Lands this page, and only this page, on the element carrying `label`:
+    /// the label its address names (`…/#label`), set by an editor following a
+    /// link into this document. Before the first compile the request waits for
+    /// the page's first document.
+    async fn jump_to_label(&mut self, label: String) {
+        let view = self.view.read().clone();
+        let Some(view) = view.filter(|view| view.doc().is_some()) else {
+            self.deferred_scroll = Some(PendingScroll::Label(label));
+            return;
+        };
+        let Some(pos) = view.resolve_label(&label) else {
+            log::info!("WebviewActor: no element carries the label <{label}>");
+            return;
+        };
+        let pos = DocumentPosition {
+            page_no: pos.page.into(),
+            x: pos.point.x.to_pt() as f32,
+            y: pos.point.y.to_pt() as f32,
+        };
+        log::info!("WebviewActor: landing on <{label}> at {pos:?}");
+        let msg = positions_req("jump", vec![pos]);
+        self.webview_websocket_conn
+            .send(WsMessage::Binary(msg.into()))
+            .await
+            .log_error("WebViewActor");
     }
 
     pub async fn run(mut self) {
@@ -128,7 +164,7 @@ where
                     let _scope = typst_timing::TimingScope::new("webview_actor_send_svg");
                     self.webview_websocket_conn.send(WsMessage::Binary(svg.into()))
                     .await.log_error("WebViewActor");
-                    self.flush_deferred_scroll();
+                    self.flush_deferred_scroll().await;
                 }
                 Some(msg) = self.webview_websocket_conn.next() => {
                     log::trace!("WebviewActor: received message from websocket: {msg:?}");
@@ -176,6 +212,8 @@ where
                         if let Ok(path) = path {
                             self.render_sender.send(RenderActorRequest::WebviewResolveFrameLoc(path)).log_error("WebViewActor");
                         };
+                    } else if let Some(label) = msg.strip_prefix("jump-label ") {
+                        self.jump_to_label(label.trim().to_owned()).await;
                     } else if let Some(state) = msg.strip_prefix("viewer-window-state ") {
                         if let Ok(state) = serde_json::from_str::<ViewerWindowStateMessage>(state) {
                             self.editor_sender.send(EditorActorRequest::ViewerWindowState(state)).log_error("WebViewActor");

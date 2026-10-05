@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use tinymist_std::error::IgnoreLogging;
 use tinymist_std::typst::TypstDocument;
 use tinymist_task::ExportTarget;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
+use typst::foundations::{Label, Selector};
+use typst::utils::PicoStr;
 use typst::{introspection::PagedPosition, syntax::Span};
 
 use crate::actor::editor::{EditorActor, EditorActorRequest};
@@ -181,6 +183,10 @@ impl Previewer {
                 }
                 let actor::webview::Channels { svg } =
                     actor::webview::WebviewActor::<'_, C>::set_up_channels();
+                // The page's render actors live as long as the page. They also
+                // subscribe to the editor's broadcasts, so one that outlived its
+                // page would take a scroll meant for the next page and drop it.
+                let (page_alive, page_gone) = watch::channel(());
                 // A scroll the editor asked for while no page was connected
                 // belongs to this page, once it has a document to scroll.
                 let deferred_scroll = h.pending_scroll.lock().take();
@@ -191,12 +197,14 @@ impl Previewer {
                     h.webview_tx.subscribe(),
                     h.editor_tx.clone(),
                     h.renderer_tx.clone(),
+                    h.doc_sender.clone(),
                     deferred_scroll,
                 );
                 match h.format {
                     ExportTarget::Paged => {
                         let render_actor = actor::render::RenderActor::new(
                             h.renderer_tx.subscribe(),
+                            page_gone.clone(),
                             h.doc_sender.clone(),
                             h.editor_tx.clone(),
                             svg.0,
@@ -205,6 +213,7 @@ impl Previewer {
                         tokio::spawn(render_actor.run());
                         let outline_render_actor = actor::render::OutlineRenderActor::new(
                             h.renderer_tx.subscribe(),
+                            page_gone.clone(),
                             h.doc_sender.clone(),
                             h.editor_tx.clone(),
                             h.span_interner,
@@ -214,6 +223,7 @@ impl Previewer {
                     ExportTarget::Html => {
                         let html_render_actor = HtmlRenderActor::new(
                             h.renderer_tx.subscribe(),
+                            page_gone.clone(),
                             h.doc_sender.clone(),
                             svg.0,
                         );
@@ -233,6 +243,7 @@ impl Previewer {
 
                 let _send = FinallySend(alive_tx);
                 webview_actor.run().await;
+                drop(page_alive);
             })
         };
 
@@ -468,6 +479,10 @@ pub struct DocToSrcJumpInfo {
     /// own preview along.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cross_document: bool,
+    /// The label the link into another document names. The target's preview
+    /// can land on it by itself: its address takes the label as fragment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A scroll request that no page has received yet: the editor asked for it
@@ -479,6 +494,9 @@ pub enum PendingScroll {
     Source(ResolveSourceLocRequest),
     /// `panelScrollByPosition`: a document position.
     Position(DocumentPosition),
+    /// A label the page's address names, asked for before the document was
+    /// compiled.
+    Label(String),
 }
 
 /// The slot holding a [`PendingScroll`], shared by the editor actor (which
@@ -575,6 +593,20 @@ pub trait CompileView: Send + Sync {
     /// linked place in that document. `None` when the span is no such link.
     fn resolve_cross_document_link(&self, _s: Span, _offset: usize) -> Option<DocToSrcJumpInfo> {
         None
+    }
+
+    /// The place in the compiled document of the first element carrying
+    /// `label`. `None` when no element carries it or nothing is compiled yet.
+    fn resolve_label(&self, label: &str) -> Option<PagedPosition> {
+        let doc = self.doc()?;
+        let label = Label::new(PicoStr::intern(label))?;
+        let introspector = doc.introspector();
+        introspector
+            .query(&Selector::Label(label))
+            .iter()
+            .filter_map(|elem| elem.location())
+            .filter_map(|loc| introspector.position(loc))
+            .find_map(|pos| pos.as_paged())
     }
 }
 

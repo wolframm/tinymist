@@ -273,7 +273,8 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   }
 
   // After a reload triggered above, put the document back where it was once
-  // enough of it has rendered.
+  // enough of it has rendered. A label in the address wins: it is where an
+  // editor sent the page (landOnAddressLabel).
   function restoreScrollPosition() {
     let saved: number | null = null;
     try {
@@ -283,6 +284,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         saved = Number.parseFloat(raw);
       }
     } catch (_) {
+      return;
+    }
+    if (addressLabel() !== null) {
       return;
     }
     if (saved === null || !Number.isFinite(saved) || saved <= 0) {
@@ -301,6 +305,32 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     };
     attempt();
   }
+  // The address may name a label to land on, `…/#e-pv`: an editor following a
+  // link into this document puts it there, on a new tab or on this one. The
+  // server answers with an ordinary jump to the element carrying the label.
+  // The label then leaves the address, so that a reload keeps the page where
+  // it is and following the same link again changes the address again.
+  function addressLabel(): string | null {
+    if (location.hash.length <= 1) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(location.hash.slice(1)) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+  let socketOpen = false;
+  function landOnAddressLabel() {
+    const label = addressLabel();
+    if (label === null || !socketOpen) {
+      return;
+    }
+    windowElem.typstWebsocket.send(`jump-label ${label}`);
+    history.replaceState(history.state, "", location.pathname + location.search);
+  }
+  window.addEventListener("hashchange", landOnAddressLabel);
+
   restoreScrollPosition();
 
   function waitForServerThenReload() {
@@ -356,11 +386,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           windowElem.typstWebsocket = sock as any;
           svgDoc.reset();
           windowElem.typstWebsocket.send("current");
+          socketOpen = true;
+          landOnAddressLabel();
         },
       },
       closeObserver: {
         next: (e) => {
           console.log("WebSocket connection closed", e);
+          socketOpen = false;
           $ws?.unsubscribe();
           if (!disposed) {
             // The data plane is on a port of its own that changes with every

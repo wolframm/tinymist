@@ -4,7 +4,7 @@ use std::sync::Arc;
 use reflexo_typst::debug_loc::{DocumentPosition, LspPosition, SourceLocation, SourceSpanOffset};
 use reflexo_vec2svg::IncrSvgDocServer;
 use tinymist_std::typst::TypstDocument;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use super::{editor::EditorActorRequest, webview::WebviewActorRequest};
 use crate::debug_loc::SpanInterner;
@@ -35,6 +35,8 @@ impl RenderActorRequest {
 
 pub struct RenderActor {
     mailbox: broadcast::Receiver<RenderActorRequest>,
+    /// Closes when the actor's page disconnects.
+    page_gone: watch::Receiver<()>,
     view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     renderer: IncrSvgDocServer,
     editor_conn_sender: mpsc::UnboundedSender<EditorActorRequest>,
@@ -45,6 +47,7 @@ pub struct RenderActor {
 impl RenderActor {
     pub fn new(
         mailbox: broadcast::Receiver<RenderActorRequest>,
+        page_gone: watch::Receiver<()>,
         view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         editor_conn_sender: mpsc::UnboundedSender<EditorActorRequest>,
         svg_sender: mpsc::UnboundedSender<Vec<u8>>,
@@ -52,6 +55,7 @@ impl RenderActor {
     ) -> Self {
         Self {
             mailbox,
+            page_gone,
             view,
             renderer: Self::new_renderer(),
             editor_conn_sender,
@@ -99,7 +103,15 @@ impl RenderActor {
         loop {
             let mut has_full_render = false;
             log::debug!("RenderActor: waiting for message");
-            match self.mailbox.recv().await {
+            let msg = tokio::select! {
+                biased;
+                _ = self.page_gone.changed() => {
+                    log::info!("RenderActor: the page is gone");
+                    break;
+                }
+                msg = self.mailbox.recv() => msg,
+            };
+            match msg {
                 Ok(msg) => {
                     has_full_render |= self.process_message(msg).await;
                 }
@@ -198,6 +210,7 @@ impl RenderActor {
                         start: st.start,
                         end: ed.start,
                         cross_document: false,
+                        label: None,
                     })
                 } else {
                     Some(ed)
@@ -288,6 +301,8 @@ impl RenderActor {
 
 pub struct OutlineRenderActor {
     signal: broadcast::Receiver<RenderActorRequest>,
+    /// Closes when the actor's page disconnects.
+    page_gone: watch::Receiver<()>,
     document: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     editor_tx: mpsc::UnboundedSender<EditorActorRequest>,
 
@@ -297,12 +312,14 @@ pub struct OutlineRenderActor {
 impl OutlineRenderActor {
     pub fn new(
         signal: broadcast::Receiver<RenderActorRequest>,
+        page_gone: watch::Receiver<()>,
         document: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         editor_tx: mpsc::UnboundedSender<EditorActorRequest>,
         span_interner: SpanInterner,
     ) -> Self {
         Self {
             signal,
+            page_gone,
             document,
             editor_tx,
             span_interner,
@@ -312,7 +329,15 @@ impl OutlineRenderActor {
     pub async fn run(mut self) {
         loop {
             log::debug!("OutlineRenderActor: waiting for message");
-            match self.signal.recv().await {
+            let msg = tokio::select! {
+                biased;
+                _ = self.page_gone.changed() => {
+                    log::info!("OutlineRenderActor: the page is gone");
+                    break;
+                }
+                msg = self.signal.recv() => msg,
+            };
+            match msg {
                 Ok(msg) => {
                     log::debug!("OutlineRenderActor: received message: {msg:?}");
                 }

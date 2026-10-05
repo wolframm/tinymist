@@ -21,6 +21,8 @@ pub struct CrossDocumentTarget {
     pub source: Source,
     /// The byte offset in it to land on.
     pub offset: usize,
+    /// The label the link names, if any.
+    pub label: Option<String>,
 }
 
 /// Resolves the link into another document that `cursor` sits in, if any.
@@ -44,10 +46,11 @@ pub fn jump_from_cross_document_link(
         .find_map(|n| n.cast::<ast::FuncCall>().and_then(cross_document_args))?;
     let target = resolve_path_from_id(source.id(), &file).ok()?.intern();
     let target = world.source(target).ok()?;
-    let offset = label.map_or(0, |label| landing(&target, &label));
+    let offset = label.as_deref().map_or(0, |label| landing(&target, label));
     Some(CrossDocumentTarget {
         source: target,
         offset,
+        label,
     })
 }
 
