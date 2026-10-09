@@ -15,6 +15,7 @@ import { RenderSession } from "@myriaddreamin/typst.ts/dist/esm/renderer.mjs";
 import { WebSocketSubject, webSocket } from "rxjs/webSocket";
 import { Subject, Subscription, buffer, debounceTime, fromEvent, tap } from "rxjs";
 import { handleHtmlPreviewFrame } from "./html-preview";
+import { installLinkHistory } from "./nav";
 export { PreviewMode } from "typst-dom/typst-doc.mjs";
 
 // for debug propose
@@ -257,6 +258,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         e.preventDefault();
       }
     });
+
+    subsribes.push(
+      ...installLinkHistory(windowElem, (message) => {
+        if (socketOpen) {
+          windowElem.typstWebsocket.send(message);
+        }
+      }),
+    );
 
     return svgDoc;
   }

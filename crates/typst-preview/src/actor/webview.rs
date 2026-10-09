@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::{editor::EditorActorRequest, render::RenderActorRequest};
 use crate::{
-    CompileView, PendingScroll, ViewerWindowStateMessage, WsMessage,
+    CompileView, NavigateMessage, PendingScroll, ViewerWindowStateMessage, WsMessage,
     actor::editor::DocToSrcJumpResolveRequest,
 };
 
@@ -214,6 +214,16 @@ where
                         };
                     } else if let Some(label) = msg.strip_prefix("jump-label ") {
                         self.jump_to_label(label.trim().to_owned()).await;
+                    } else if let Some(step) = msg.strip_prefix("nav ") {
+                        // `nav <kind> [<page> <x> <y>]`: for the editor's history.
+                        let mut parts = step.split_whitespace();
+                        let kind = parts.next().unwrap_or_default().to_owned();
+                        let numbers: Vec<f32> = parts.filter_map(|s| s.parse().ok()).collect();
+                        let position = match numbers[..] {
+                            [page_no, x, y] if page_no >= 1. => Some(DocumentPosition { page_no: page_no as usize, x, y }),
+                            _ => None,
+                        };
+                        self.editor_sender.send(EditorActorRequest::Navigate(NavigateMessage { kind, position })).log_error("WebViewActor");
                     } else if let Some(state) = msg.strip_prefix("viewer-window-state ") {
                         if let Ok(state) = serde_json::from_str::<ViewerWindowStateMessage>(state) {
                             self.editor_sender.send(EditorActorRequest::ViewerWindowState(state)).log_error("WebViewActor");

@@ -555,6 +555,19 @@ pub struct ViewerWindowStateMessage {
     pub window: ViewerWindowState,
 }
 
+/// A step through links in the page, for the editor's back/forward history:
+/// the editor keeps it, across documents, and moves a page with
+/// `panelScrollByPosition`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavigateMessage {
+    /// `jump` (a click on a link inside the document), `link` (on a link into
+    /// another document), `back` or `forward` (Cmd+[ and Cmd+]).
+    pub kind: String,
+    /// Where the page was: the document point a `panelScrollByPosition` puts
+    /// back where it is now. None before the page has rendered.
+    pub position: Option<DocumentPosition>,
+}
+
 pub trait CompileView: Send + Sync {
     /// Get the compiled document.
     fn doc(&self) -> Option<TypstDocument>;

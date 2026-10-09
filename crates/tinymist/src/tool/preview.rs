@@ -538,6 +538,11 @@ impl PreviewState {
                             window: s.window,
                         },
                     ),
+                    Navigate(s) => client.send_notification::<NotifNavigate>(&NavigateParams {
+                        task_id: tid.clone(),
+                        kind: s.kind,
+                        position: s.position,
+                    }),
                 }
             }
 
@@ -667,6 +672,23 @@ struct NotifDocumentOutline;
 impl Notification for NotifDocumentOutline {
     type Params = tinymist_preview::Outline;
     const METHOD: &'static str = "tinymist/documentOutline";
+}
+
+/// A step through links in a preview (`tinymist/preview/navigate`), for an
+/// editor that keeps the back/forward history across documents.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NavigateParams {
+    task_id: String,
+    kind: String,
+    position: Option<reflexo::debug_loc::DocumentPosition>,
+}
+
+struct NotifNavigate;
+
+impl Notification for NotifNavigate {
+    type Params = NavigateParams;
+    const METHOD: &'static str = "tinymist/preview/navigate";
 }
 
 #[derive(Serialize, Deserialize)]
