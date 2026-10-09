@@ -69,6 +69,15 @@ export function provideSvgDoc<
       viewportAnchor?: SvgResizeAnchor;
     };
     private svgResizeAnchorTimeout?: ReturnType<typeof setTimeout>;
+    /// the point a zoom keeps in place: where it is on screen, and where it is in
+    /// the document (svg units; y as a page or gap anchor, because the gaps
+    /// between pages change with the scale). Kept until the zoom has rendered.
+    private svgZoomAnchor?: {
+      clientX: number;
+      clientY: number;
+      x: number;
+      y: SvgResizeAnchor;
+    };
     setCursorPaths(paths: ElementPoint[][]) {
       this.cursorPaths = paths;
       this.addViewportChange();
@@ -80,6 +89,7 @@ export function provideSvgDoc<
         this.windowElem.initTypstSvg(docRoot);
         this.r.rescale();
       }
+      this.svgZoomAnchor = undefined;
     }
 
     rerender$svg() {
@@ -352,7 +362,8 @@ export function provideSvgDoc<
       return Number.isFinite(height) && height > 0 ? height : undefined;
     }
 
-    private resolveViewportTopY(svg: SVGElement, scrollEl: HTMLElement) {
+    /// the document y (svg units) at `clientY` on screen
+    private resolveSvgY(svg: SVGElement, clientY: number) {
       const svgHeight = this.resolveSvgDocumentHeight(svg);
       if (svgHeight === undefined) {
         return undefined;
@@ -364,29 +375,63 @@ export function provideSvgDoc<
         return undefined;
       }
 
-      return (scrollEl.getBoundingClientRect().top - svgRect.top) / actualScaleY;
+      return (clientY - svgRect.top) / actualScaleY;
     }
 
     private captureViewportTopResizeAnchor(svg: SVGElement, scrollEl: HTMLElement) {
-      const viewportTopY = this.resolveViewportTopY(svg, scrollEl);
+      const viewportTopY = this.resolveSvgY(svg, scrollEl.getBoundingClientRect().top);
       if (viewportTopY === undefined) {
         return undefined;
       }
+      return this.captureSvgYAnchor(svg, viewportTopY);
+    }
 
+    private captureSvgYAnchor(svg: SVGElement, y: number) {
       const pages = this.collectSvgAnchorPages(svg);
-      const containingPage = pages.find(
-        (page) => viewportTopY >= page.y && viewportTopY <= page.y + page.height,
-      );
+      const containingPage = pages.find((page) => y >= page.y && y <= page.y + page.height);
       if (containingPage) {
         return {
           kind: "page",
           pageNumber: containingPage.pageNumber,
-          pageLocalY: viewportTopY - containingPage.y,
+          pageLocalY: y - containingPage.y,
           pageHeight: containingPage.height,
         } satisfies SvgResizePageAnchor;
       }
 
-      return this.captureSvgGapAnchor(svg, pages, viewportTopY);
+      return this.captureSvgGapAnchor(svg, pages, y);
+    }
+
+    captureZoomAnchor(clientX: number, clientY: number) {
+      this.svgZoomAnchor = undefined;
+      const svg = this.hookedElem.firstElementChild as SVGElement | null;
+      if (!svg || !Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+        return;
+      }
+      const svgWidth = Number.parseFloat(svg.getAttribute("data-width") || "NaN");
+      const scaleX = svg.getBoundingClientRect().width / svgWidth;
+      const svgY = this.resolveSvgY(svg, clientY);
+      if (!Number.isFinite(scaleX) || scaleX <= 0 || svgY === undefined) {
+        return;
+      }
+      const y = this.captureSvgYAnchor(svg, svgY);
+      if (y) {
+        const x = (clientX - svg.getBoundingClientRect().left) / scaleX;
+        this.svgZoomAnchor = { clientX, clientY, x, y };
+      }
+    }
+
+    /// scroll so the zoom anchor's document point is back where it was on screen
+    private restoreZoomAnchor(svg: SVGElement, scrollEl: HTMLElement) {
+      const anchor = this.svgZoomAnchor!;
+      const svgWidth = Number.parseFloat(svg.getAttribute("data-width") || "NaN");
+      const svgHeight = this.resolveSvgDocumentHeight(svg);
+      const y = this.resolveSyntheticYForResizeAnchor(svg, anchor.y);
+      if (!(svgWidth > 0) || svgHeight === undefined || y === undefined) {
+        return;
+      }
+      const svgRect = svg.getBoundingClientRect();
+      scrollEl.scrollLeft += svgRect.left + (anchor.x * svgRect.width) / svgWidth - anchor.clientX;
+      scrollEl.scrollTop += svgRect.top + (y * svgRect.height) / svgHeight - anchor.clientY;
     }
 
     private captureSvgGapAnchor(
@@ -509,8 +554,7 @@ export function provideSvgDoc<
       const scrollElement = this.hookedElem.parentElement;
       const prevScale = this.lastSvgScale;
       const prevScaleRatio = this.lastSvgScaleRatio;
-      // Manual zoom changes currentScaleRatio and is handled by
-      // installRescaleHandler's cursor-centered scroll adjustment.
+      // Manual zoom changes currentScaleRatio and is handled by the zoom anchor.
       const scaleRatioChanged =
         prevScaleRatio !== undefined &&
         Math.abs(this.currentScaleRatio - prevScaleRatio) >= SVG_SCALE_EPSILON;
@@ -586,12 +630,9 @@ export function provideSvgDoc<
         this.hookedElem.style.transform = transformAttr;
       }
 
-      // change height of the container back from `installRescaleHandler` hack
-      if (this.hookedElem.style.height) {
-        this.hookedElem.style.removeProperty("height");
-      }
-
-      if (restoreScroll) {
+      if (this.svgZoomAnchor && scrollElement instanceof HTMLElement) {
+        this.restoreZoomAnchor(svg, scrollElement);
+      } else if (restoreScroll) {
         restoreScroll();
       }
 

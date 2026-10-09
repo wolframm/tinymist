@@ -214,33 +214,33 @@ export class TypstDocumentContext<O = any> {
       0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.3, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3,
       3.3, 3.7, 4.1, 4.6, 5.1, 5.7, 6.3, 7, 7.7, 8.5, 9.4, 10,
     ];
-    const doRescale = (
-      scrollDirection: number,
-      pageX: number | undefined,
-      pageY: number | undefined,
-    ) => {
-      const prevScaleRatio = this.currentScaleRatio;
+    /// `clientX`, `clientY`: the point on screen that keeps its place in the document
+    const doRescale = (scrollDirection: number, clientX: number, clientY: number) => {
       // Get wheel scroll direction and calculate new scale
+      let nextScaleRatio: number;
       if (scrollDirection === -1) {
         // enlarge
         if (this.currentScaleRatio >= factors.at(-1)!) {
           // already large than max factor
           return;
         } else {
-          this.currentScaleRatio = factors.filter((x) => x > this.currentScaleRatio).at(0)!;
+          nextScaleRatio = factors.filter((x) => x > this.currentScaleRatio).at(0)!;
         }
       } else if (scrollDirection === 1) {
         // reduce
         if (this.currentScaleRatio <= factors.at(0)!) {
           return;
         } else {
-          this.currentScaleRatio = factors.filter((x) => x < this.currentScaleRatio).at(-1)!;
+          nextScaleRatio = factors.filter((x) => x < this.currentScaleRatio).at(-1)!;
         }
       } else {
         // no y-axis scroll
         return;
       }
-      const scrollFactor = this.currentScaleRatio / prevScaleRatio;
+      // The scroll position is set once the document has its new size: scrolling
+      // now is clamped to the old size, which lost the horizontal part entirely.
+      this.captureZoomAnchor(clientX, clientY);
+      this.currentScaleRatio = nextScaleRatio;
 
       // hide scrollbar if scale == 1
       if (Math.abs(this.currentScaleRatio - 1) < 1e-5) {
@@ -259,40 +259,23 @@ export class TypstDocumentContext<O = any> {
         }
       }
 
-      // reserve space to scroll down
-      const svg = this.hookedElem.firstElementChild! as SVGElement;
-      if (svg) {
-        const scaleRatio = this.getSvgScaleRatio();
-
-        const dataHeight = Number.parseFloat(svg.getAttribute("data-height")!);
-        const scaledHeight = Math.ceil(dataHeight * scaleRatio);
-
-        // we increase the height by 2 times.
-        // The `2` is only a magic number that is large enough.
-        this.hookedElem.style.height = `${scaledHeight * 2}px`;
-      }
-
-      // make sure the cursor is still on the same position
-      if (pageX !== undefined && pageY !== undefined) {
-        const scrollX = pageX * (scrollFactor - 1);
-        const scrollY = pageY * (scrollFactor - 1);
-        this.hookedElem.parentElement!.scrollBy(scrollX, scrollY);
-      }
       // toggle scale change event
       this.addViewportChange();
     };
 
-    // Ctrl+= or Ctrl+- rescaling
+    // Ctrl+= or Ctrl+- rescaling, about the middle of the view
     const isMac = navigator.platform.toUpperCase().indexOf("MAC") !== -1;
     const keydownEventHandler = (event: KeyboardEvent) => {
       if ((!isMac && event.ctrlKey) || (isMac && event.metaKey)) {
-        if (event.key === "=") {
+        if (event.key === "=" || event.key === "-") {
           event.preventDefault();
-          doRescale(-1, undefined, undefined);
-          return false;
-        } else if (event.key === "-") {
-          event.preventDefault();
-          doRescale(+1, undefined, undefined);
+          const view = this.hookedElem.parentElement!;
+          const rect = view.getBoundingClientRect();
+          doRescale(
+            event.key === "=" ? -1 : +1,
+            rect.left + view.clientWidth / 2,
+            rect.top + view.clientHeight / 2,
+          );
           return false;
         }
       }
@@ -322,8 +305,7 @@ export class TypstDocumentContext<O = any> {
         const scrollDirection = deltaDistance > 0 ? 1 : -1;
         deltaDistance = 0;
 
-        const baseRect = this.hookedElem.getBoundingClientRect();
-        doRescale(scrollDirection, event.pageX - baseRect.x, event.pageY - baseRect.y);
+        doRescale(scrollDirection, event.clientX, event.clientY);
         return false;
       }
     };
@@ -347,6 +329,10 @@ export class TypstDocumentContext<O = any> {
       });
     }
   }
+
+  /// Remember the document point under `clientX`, `clientY` so the coming rescale
+  /// keeps it there. The svg document implements it.
+  captureZoomAnchor(_clientX: number, _clientY: number) {}
 
   /// Get current scale from html to svg
   // Note: one should retrieve dom state before rescale
