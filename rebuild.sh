@@ -9,7 +9,7 @@
 #   ./rebuild.sh --build    no rebase: build and install what `flavor` is now
 #
 # Installs to ~/.local/bin/tinymist, which precedes /opt/homebrew/bin on PATH, so
-# nvim (typst-preview and the LSP) picks it up. Homebrew's copy stays untouched.
+# PyCharm's Typst plugin picks it up. Homebrew's copy stays untouched.
 set -euo pipefail
 
 C=${0:A:h}
@@ -70,4 +70,4 @@ mkdir -p ~/.local/bin
 cp "$bin" ~/.local/bin/tinymist.new && mv ~/.local/bin/tinymist.new ~/.local/bin/tinymist
 echo "installed: $(~/.local/bin/tinymist -V) (flavor on $(cat .flavor-base))"
 echo "homebrew:  $(/opt/homebrew/bin/tinymist -V 2>/dev/null || echo none)"
-echo "restart nvim (or :TypstPreviewStop / :TypstPreview) to run the new binary"
+echo "restart the language server (PyCharm's status-bar widget, or PyCharm) to run the new binary"

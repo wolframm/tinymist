@@ -1,8 +1,8 @@
 # tinymist flavor
 
 Arne's build of tinymist: the upstream release tag plus the fixes below, installed as
-`~/.local/bin/tinymist`, which precedes Homebrew's copy on PATH. nvim's typst-preview
-and the LSP both run it.
+`~/.local/bin/tinymist`, which precedes Homebrew's copy on PATH. The PyCharm Typst plugin
+(`~/Documents/code/typst-pycharm`) runs it as the language server, which hosts every preview.
 
 ## Layout
 
@@ -53,5 +53,5 @@ tinymist -V
 strings -a "$(which tinymist)" | grep -c 'e.metaKey || e.ctrlKey || e.altKey'   # 1 = flavor page
 ```
 
-A running nvim keeps the tinymist it started; restart nvim, or `:TypstPreviewStop` and
-`:TypstPreview`, to pick up a new binary (the LSP restarts with nvim).
+A running language server keeps the tinymist it started; restart it from PyCharm's
+status-bar widget, or restart PyCharm, to pick up a new binary.
