@@ -50,6 +50,14 @@ interface TypstPosition {
   y: number;
 }
 
+/// A point of the document that outlives a reload: `x` in svg units from the
+/// document's left edge, `y` held relative to a page or to the gap between two,
+/// as the svg document records it.
+export interface ViewPoint {
+  x: number;
+  y: unknown;
+}
+
 export interface TypstDomWindowElement extends HTMLElement {
   initTypstSvg(docRoot: SVGElement): void;
   currentPosition(elem: Element): TypstPosition | undefined;
@@ -240,24 +248,7 @@ export class TypstDocumentContext<O = any> {
       // The scroll position is set once the document has its new size: scrolling
       // now is clamped to the old size, which lost the horizontal part entirely.
       this.captureZoomAnchor(clientX, clientY);
-      this.currentScaleRatio = nextScaleRatio;
-
-      // hide scrollbar if scale == 1
-      if (Math.abs(this.currentScaleRatio - 1) < 1e-5) {
-        this.hookedElem.classList.add("hide-scrollbar-x");
-        this.hookedElem.parentElement?.classList.add("hide-scrollbar-x");
-        if (this.previewMode === PreviewMode.Slide) {
-          this.hookedElem.classList.add("hide-scrollbar-y");
-          this.hookedElem.parentElement?.classList.add("hide-scrollbar-y");
-        }
-      } else {
-        this.hookedElem.classList.remove("hide-scrollbar-x");
-        this.hookedElem.parentElement?.classList.remove("hide-scrollbar-x");
-        if (this.previewMode === PreviewMode.Slide) {
-          this.hookedElem.classList.remove("hide-scrollbar-y");
-          this.hookedElem.parentElement?.classList.remove("hide-scrollbar-y");
-        }
-      }
+      this.setScaleRatio(nextScaleRatio);
 
       // toggle scale change event
       this.addViewportChange();
@@ -330,9 +321,43 @@ export class TypstDocumentContext<O = any> {
     }
   }
 
+  /// Set the zoom; a reloaded page sets its saved one before its first render.
+  setScaleRatio(scaleRatio: number) {
+    this.currentScaleRatio = scaleRatio;
+
+    // hide scrollbar if scale == 1
+    if (Math.abs(this.currentScaleRatio - 1) < 1e-5) {
+      this.hookedElem.classList.add("hide-scrollbar-x");
+      this.hookedElem.parentElement?.classList.add("hide-scrollbar-x");
+      if (this.previewMode === PreviewMode.Slide) {
+        this.hookedElem.classList.add("hide-scrollbar-y");
+        this.hookedElem.parentElement?.classList.add("hide-scrollbar-y");
+      }
+    } else {
+      this.hookedElem.classList.remove("hide-scrollbar-x");
+      this.hookedElem.parentElement?.classList.remove("hide-scrollbar-x");
+      if (this.previewMode === PreviewMode.Slide) {
+        this.hookedElem.classList.remove("hide-scrollbar-y");
+        this.hookedElem.parentElement?.classList.remove("hide-scrollbar-y");
+      }
+    }
+  }
+
   /// Remember the document point under `clientX`, `clientY` so the coming rescale
   /// keeps it there. The svg document implements it.
   captureZoomAnchor(_clientX: number, _clientY: number) {}
+
+  /// The document point at the top left corner of the view, or undefined before
+  /// the document has rendered. The svg document implements it.
+  captureViewPoint(): ViewPoint | undefined {
+    return undefined;
+  }
+
+  /// Scroll `point` to the top left corner of the view. False when the document,
+  /// or the page the point is on, has not rendered. The svg document implements it.
+  scrollToViewPoint(_point: ViewPoint): boolean {
+    return false;
+  }
 
   /// Get current scale from html to svg
   // Note: one should retrieve dom state before rescale

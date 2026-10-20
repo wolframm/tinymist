@@ -1,4 +1,5 @@
 import { PreviewMode } from "typst-dom/typst-doc.mjs";
+import type { ViewPoint } from "typst-dom/typst-doc.mjs";
 import {
   TypstPreviewDocument as TypstDocument,
   TypstDomHookedElement,
@@ -81,6 +82,20 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           .subscribe(() => svgDoc.addViewportChange()),
       );
     }
+
+    // The view as it changes, and as the page goes (restoreView). A zoom
+    // scrolls too: it keeps a point in place.
+    subsribes.push(
+      fromEvent(resizeTarget, "scroll")
+        .pipe(debounceTime(300))
+        .subscribe(() => saveView(svgDoc)),
+      fromEvent(window, "pagehide").subscribe(() => saveView(svgDoc)),
+      fromEvent(document, "visibilitychange").subscribe(() => {
+        if (document.visibilityState === "hidden") {
+          saveView(svgDoc);
+        }
+      }),
+    );
 
     // Handle messages sent from the extension to the webview
     subsribes.push(
@@ -270,50 +285,6 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     return svgDoc;
   }
 
-  function saveScrollPosition() {
-    try {
-      const main = document.getElementById("typst-container-main");
-      if (main) {
-        sessionStorage.setItem("typst-preview-scroll-top", String(main.scrollTop));
-      }
-    } catch (_) {
-      // storage unavailable: the reload lands at the top
-    }
-  }
-
-  // After a reload triggered above, put the document back where it was once
-  // enough of it has rendered. A label in the address wins: it is where an
-  // editor sent the page (landOnAddressLabel).
-  function restoreScrollPosition() {
-    let saved: number | null = null;
-    try {
-      const raw = sessionStorage.getItem("typst-preview-scroll-top");
-      if (raw !== null) {
-        sessionStorage.removeItem("typst-preview-scroll-top");
-        saved = Number.parseFloat(raw);
-      }
-    } catch (_) {
-      return;
-    }
-    if (addressLabel() !== null) {
-      return;
-    }
-    if (saved === null || !Number.isFinite(saved) || saved <= 0) {
-      return;
-    }
-    let tries = 0;
-    const attempt = () => {
-      const main = document.getElementById("typst-container-main");
-      if (main && main.scrollHeight >= saved! + main.clientHeight) {
-        main.scrollTo({ top: saved!, behavior: "instant" });
-        return;
-      }
-      if (++tries < 100) {
-        setTimeout(attempt, 100);
-      }
-    };
-    attempt();
-  }
   // The address may name a label to land on, `…/#e-pv`: an editor following a
   // link into this document puts it there, on a new tab or on this one. The
   // server answers with an ordinary jump to the element carrying the label.
@@ -339,8 +310,6 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     history.replaceState(history.state, "", location.pathname + location.search);
   }
   window.addEventListener("hashchange", landOnAddressLabel);
-
-  restoreScrollPosition();
 
   function waitForServerThenReload() {
     const probe = () =>
@@ -379,6 +348,85 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     attempt();
   }
 
+  // A reload keeps the zoom and the place: the browser's reload, and the page's
+  // own when its server comes back. The page saves both as they change and as
+  // it goes, and puts them back with its first render. In localStorage, so a
+  // closed tab keeps them too; the origin is the document's port, and the key
+  // names the document, because a port passes to another document when that
+  // one's own port is taken.
+  const viewKey = `typst-preview-view ${document.title}`;
+  interface SavedView {
+    scaleRatio: number;
+    point: ViewPoint;
+  }
+  const keepsView = previewMode === PreviewMode.Doc && !isContentPreview;
+  // Nothing is saved until the saved view is back: the first render, at the
+  // top and unzoomed, would overwrite it.
+  let viewRestored = false;
+
+  function saveView(svgDoc: TypstDocument) {
+    if (!keepsView || !viewRestored) {
+      return;
+    }
+    const point = svgDoc.impl.captureViewPoint();
+    if (point === undefined) {
+      return;
+    }
+    const view: SavedView = { scaleRatio: svgDoc.impl.currentScaleRatio, point };
+    try {
+      localStorage.setItem(viewKey, JSON.stringify(view));
+    } catch (_) {
+      // storage unavailable: a reload starts at the top, unzoomed
+    }
+  }
+
+  function loadView(): SavedView | undefined {
+    try {
+      const view = JSON.parse(localStorage.getItem(viewKey) || "null");
+      const ratio = view?.scaleRatio;
+      if (Number.isFinite(ratio) && ratio >= 0.1 && ratio <= 10 && view.point) {
+        return view;
+      }
+    } catch (_) {
+      // nothing usable saved
+    }
+    return undefined;
+  }
+
+  // The zoom applies before the first render, the place once its page has
+  // rendered. A label in the address wins over the place, and so does a scroll
+  // the editor sends, which ends the retries (scrollToLocation).
+  function restoreView(svgDoc: TypstDocument) {
+    const view = keepsView ? loadView() : undefined;
+    if (view === undefined) {
+      viewRestored = true;
+      return;
+    }
+    svgDoc.impl.setScaleRatio(view.scaleRatio);
+    if (addressLabel() !== null) {
+      viewRestored = true;
+      return;
+    }
+    const token = ++latestLocation;
+    let tries = 0;
+    const attempt = () => {
+      if (token !== latestLocation) {
+        viewRestored = true;
+        return;
+      }
+      if (!svgDoc.impl.isRendering && svgDoc.impl.scrollToViewPoint(view.point)) {
+        viewRestored = true;
+        return;
+      }
+      if (++tries < 100) {
+        setTimeout(attempt, 100);
+      } else {
+        viewRestored = true;
+      }
+    };
+    attempt();
+  }
+
   function setupSocket(svgDoc: TypstDocument): () => void {
     windowElem.documents.push(svgDoc);
 
@@ -408,9 +456,8 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
             // The data plane is on a port of its own that changes with every
             // restart of the server, so reconnecting to `url` cannot succeed.
             // Wait for the page's own server to answer again and reload from
-            // it; the reload picks up the new data plane. The scroll position
-            // survives through sessionStorage (restoreScrollPosition).
-            saveScrollPosition();
+            // it; the reload picks up the new data plane. The zoom and the
+            // place survive it (restoreView).
             waitForServerThenReload();
           }
         },
@@ -600,7 +647,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
       return new Promise(async (kernelDispose) => {
         console.log("plugin initialized, build info:", await rendererBuildInfo());
 
-        const wsDispose = setupSocket(createSvgDocument(kModule));
+        const svgDoc = createSvgDocument(kModule);
+        restoreView(svgDoc);
+        const wsDispose = setupSocket(svgDoc);
 
         // todo: plugin init and setup socket at the same time
         resolveDispose(() => {
