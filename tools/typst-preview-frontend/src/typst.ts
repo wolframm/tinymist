@@ -5,6 +5,7 @@
 // @param (id): string value of a unique event id
 // @doc (event.timeStamp): http://api.jquery.com/event.timeStamp/
 
+import { hubAfterRender } from "./hub";
 import { TypstDomWindowElement } from "typst-dom";
 
 // @bug (event.currentTime): https://bugzilla.mozilla.org/show_bug.cgi?id=238041
@@ -104,6 +105,7 @@ windowElem.initTypstSvg = function (docRoot: SVGElement) {
   }
 
   hideFillTextLayers(docRoot);
+  hubAfterRender(docRoot);
 
   /// initialize text layout at client side
   if (false) {

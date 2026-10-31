@@ -21,6 +21,7 @@ import { Toc, installToc } from "./toc";
 import {
   hub,
   hubFitCommonPage,
+  hubWindowPages,
   hubInflater,
   hubNavigate,
   hubProbeFailed,
@@ -726,6 +727,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         console.log("plugin initialized, build info:", await rendererBuildInfo());
 
         const svgDoc = createSvgDocument(kModule);
+        hubWindowPages(svgDoc, windowElem);
         restoreView(svgDoc);
         const wsDispose = setupSocket(svgDoc);
 

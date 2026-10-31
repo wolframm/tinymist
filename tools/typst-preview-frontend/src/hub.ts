@@ -203,3 +203,175 @@ export function hubFitCommonPage(svgDoc: TypstDocument) {
   };
   attempt();
 }
+
+// A phone cannot hold a long document. construction-details as one page of
+// svg is 250,000 elements (164,000 glyphs alone), which took Safari to 1.6 GB
+// and iOS killed it; the drawings, the text layers and the renderer's own
+// memory were the lesser part. So a hub page keeps in the document only the
+// pages within two screens of the view: the renderer still renders the whole
+// document, every time, and the page keeps each page's svg as text (by its
+// data-tid) and puts it in, or takes it out, as the view moves. Nothing is
+// asked of the server. The paper of every page stays (typst-dom draws it
+// outside the pages), so a page being filled is white, never missing.
+//
+// A render after the first sends only what changed. A page it marks
+// `data-reuse-from` its own tid is unchanged and stays as it is; one marked
+// with another page's tid is that page changed, and its svg is a patch of
+// that page's elements: that page is filled before typst-dom patches it, and
+// the result is kept as the changed page's text afterwards.
+const PAGE = /<g\s[^>]*class="typst-page"[^>]*>/g;
+const G = /<g(?:\s[^>]*?)?(\/)?>|<\/g>/g;
+const pageText = new Map<string, string>();
+/// pages a render changed: their text is taken from the document after it
+const changed = new Set<string>();
+let windowed: TypstDomWindowElement | undefined;
+
+function livePages(): SVGGElement[] {
+  const svg = document.querySelector("#typst-app > svg");
+  return svg ? [...svg.querySelectorAll<SVGGElement>(":scope > g.typst-page")] : [];
+}
+
+function fill(page: SVGGElement): boolean {
+  const text = pageText.get(page.getAttribute("data-tid") || "");
+  if (!text) {
+    return false;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(page);
+  page.append(range.createContextualFragment(text));
+  windowed?.initTypstSvg(page);
+  return true;
+}
+
+/// Every render's svg, before typst-dom puts it in: a new page's content is
+/// kept here and the page goes in empty; a changed page goes in whole, onto
+/// its previous version, filled for it.
+function emptyPages(svg: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let live: SVGGElement[] | undefined;
+  PAGE.lastIndex = 0;
+  for (let open = PAGE.exec(svg); open; open = PAGE.exec(svg)) {
+    if (open[0].endsWith("/>")) {
+      continue;
+    }
+    const start = open.index + open[0].length;
+    let depth = 1;
+    G.lastIndex = start;
+    let tag = G.exec(svg);
+    for (; tag; tag = G.exec(svg)) {
+      if (tag[0] === "</g>") {
+        depth -= 1;
+      } else if (!tag[1]) {
+        depth += 1;
+      }
+      if (depth === 0) {
+        break;
+      }
+    }
+    const tid = /data-tid="([^"]*)"/.exec(open[0])?.[1];
+    if (!tag || tid === undefined) {
+      // not what was expected: the page goes in whole
+      continue;
+    }
+    PAGE.lastIndex = tag.index;
+    const from = /data-reuse-from="([^"]*)"/.exec(open[0])?.[1];
+    if (from === undefined) {
+      pageText.set(tid, svg.slice(start, tag.index));
+      parts.push(svg.slice(copied, start));
+      copied = tag.index;
+    } else if (from !== tid) {
+      live ??= livePages();
+      const previous = live.find((p) => p.getAttribute("data-tid") === from);
+      if (previous && previous.childElementCount === 0) {
+        fill(previous);
+      }
+      changed.add(tid);
+    }
+  }
+  if (parts.length === 0) {
+    return svg;
+  }
+  parts.push(svg.slice(copied));
+  return parts.join("");
+}
+
+/// After a render: the changed pages' text is taken, what no page has any
+/// more is dropped, and the window is set again.
+function afterRender() {
+  const live = livePages();
+  const tids = new Set<string>();
+  for (const page of live) {
+    const tid = page.getAttribute("data-tid") || "";
+    tids.add(tid);
+    if (changed.has(tid) && page.childElementCount > 0) {
+      pageText.set(tid, page.innerHTML);
+    }
+  }
+  changed.clear();
+  for (const tid of pageText.keys()) {
+    if (!tids.has(tid)) {
+      pageText.delete(tid);
+    }
+  }
+  windowPages();
+}
+
+/// Fills the pages near the view and empties the others.
+function windowPages() {
+  const main = document.getElementById("typst-container-main");
+  const svg = document.querySelector("#typst-app > svg") as SVGElement | null;
+  const dataHeight = Number.parseFloat(svg?.getAttribute("data-height") || "0");
+  if (!windowed || !main || !svg || !(dataHeight > 0)) {
+    return;
+  }
+  const scale = svg.getBoundingClientRect().height / dataHeight;
+  if (!(scale > 0)) {
+    return;
+  }
+  const top = main.scrollTop / scale;
+  const bottom = (main.scrollTop + main.clientHeight) / scale;
+  const margin = 2 * (bottom - top);
+  for (const page of livePages()) {
+    const y = Number.parseFloat(page.getAttribute("data-y") || "NaN");
+    const height = Number.parseFloat(page.getAttribute("data-page-height") || "NaN");
+    const near = !(y + height < top - margin || y > bottom + margin);
+    if (near && page.childElementCount === 0) {
+      fill(page);
+    } else if (!near && page.childElementCount > 0) {
+      page.replaceChildren();
+    }
+  }
+}
+
+/// Keeps a hub page's document to the pages near the view.
+export function hubWindowPages(svgDoc: TypstDocument, windowElem: TypstDomWindowElement) {
+  if (!hub) {
+    return;
+  }
+  windowed = windowElem;
+  svgDoc.impl.svgFilter = emptyPages;
+  document.getElementById("typst-container-main")?.addEventListener("scroll", scheduleWindow, {
+    passive: true,
+  });
+  window.addEventListener("resize", scheduleWindow);
+}
+
+let frame = 0;
+function scheduleWindow() {
+  if (frame === 0) {
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      windowPages();
+    });
+  }
+}
+
+/// After every render (typst.ts): the pages the view needs are filled, now
+/// and once more after typst-dom has fitted the document to the view.
+export function hubAfterRender(docRoot: Element) {
+  if (windowed && docRoot.tagName.toLowerCase() === "svg") {
+    afterRender();
+    scheduleWindow();
+  }
+}

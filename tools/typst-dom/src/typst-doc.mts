@@ -105,6 +105,9 @@ export class TypstDocumentContext<O = any> {
 
   /// whether svg is updating (in triggerSvgUpdate)
   isRendering: boolean = false;
+  /// Rewrites the rendered svg before it reaches the page (the hub's page
+  /// holds images back until they come near the view).
+  svgFilter?: (svg: string) => string;
   /// whether kModule is initialized
   moduleInitialized: boolean = false;
   /// patch queue for updating data.

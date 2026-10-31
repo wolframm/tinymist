@@ -115,6 +115,9 @@ export function provideSvgDoc<
         throw new Error(`unknown preview mode ${mode}`);
       }
 
+      if (this.svgFilter) {
+        patchStr = this.svgFilter(patchStr);
+      }
       const t2 = performance.now();
       patchSvgToContainer(this.hookedElem, patchStr, (elem) => this.decorateSvgElement(elem, mode));
       const t3 = performance.now();
