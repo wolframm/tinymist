@@ -103,6 +103,8 @@ windowElem.initTypstSvg = function (docRoot: SVGElement) {
     elem.addEventListener("mouseleave", mouseLeaveFromLink);
   }
 
+  hideFillTextLayers(docRoot);
+
   /// initialize text layout at client side
   if (false) {
     setTimeout(() => {
@@ -146,6 +148,32 @@ windowElem.initTypstSvg = function (docRoot: SVGElement) {
     }
   }
 };
+
+// A fill — the leader dots of a table of contents, any `repeat` — is one text
+// item per repetition, and every text item carries its own selection layer (a
+// foreignObject holding its text). Chrome composites each of those layers on
+// its own: a contents page holds two thousand, and bringing one into view froze
+// the page for 5 to 15 s (PaintArtifactCompositor::Update). Nobody selects or
+// searches a fill, so its layers go: three or more text items in a row whose
+// text is the same single sign.
+function hideFillTextLayers(docRoot: Element) {
+  const layers = docRoot.getElementsByClassName("tsel");
+  const isFill = (text: string | null) =>
+    text !== null && text.length === 1 && !/[\p{L}\p{N}\s]/u.test(text);
+  let start = 0;
+  for (let i = 1; i <= layers.length; i++) {
+    const text = layers[start].textContent;
+    if (i < layers.length && layers[i].textContent === text) {
+      continue;
+    }
+    if (i - start >= 3 && isFill(text)) {
+      for (let j = start; j < i; j++) {
+        (layers[j].parentElement as HTMLElement | null)?.style.setProperty("display", "none");
+      }
+    }
+    start = i;
+  }
+}
 
 function layoutText(svg: SVGElement) {
   const divs = svg.querySelectorAll<HTMLDivElement>(".tsel");

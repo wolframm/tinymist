@@ -282,8 +282,12 @@ export function provideDebugJumpDoc<TBase extends GConstructor<TypstDocumentCont
       // A hidden page — a tab that is not the active one, or a window that
       // is covered — runs no smooth scroll at all: the request is dropped.
       // The editor scrolls a preview it is about to bring to the front, so a
-      // hidden page scrolls instantly and is in place when it appears.
-      const behavior: ScrollBehavior = document.visibilityState === "visible" ? "smooth" : "instant";
+      // hidden page scrolls instantly and is in place when it appears. A jump
+      // of more than two screens is instant too: on the way, a long document
+      // paints a page at every frame (a fifth of a second each) to show a blur.
+      const far = Math.abs(yOffset - scrollElem.scrollTop) > 2 * scrollElem.clientHeight;
+      const behavior: ScrollBehavior =
+        document.visibilityState === "visible" && !far ? "smooth" : "instant";
 
       // default single-column or multi-column layout
       if (widthOccupied >= 90 || widthOccupied < 50) {

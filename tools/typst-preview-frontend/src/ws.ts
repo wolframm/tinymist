@@ -75,11 +75,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     // window.onresize = () => svgDoc.rescale();
     subsribes.push(fromEvent(window, "resize").subscribe(() => svgDoc.addViewportChange()));
 
+    // Only a partial render depends on the view. A full one rendered the whole
+    // document again half a second after every scroll, and froze the page for
+    // as long (a third of a second in a long one) to change nothing.
     if (!isContentPreview) {
       subsribes.push(
         fromEvent(resizeTarget, "scroll")
           .pipe(debounceTime(500))
-          .subscribe(() => svgDoc.addViewportChange()),
+          .subscribe(() => svgDoc.impl.partialRendering && svgDoc.addViewportChange()),
       );
     }
 
@@ -205,8 +208,23 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     const helpButton = document.getElementById("typst-top-help-button");
     helpButton?.addEventListener("click", toggleHelp);
 
+    const isMac = navigator.platform.toUpperCase().indexOf("MAC") !== -1;
     window.addEventListener("keydown", (e) => {
-      // Browser and OS shortcuts (Cmd+T, Ctrl+L, Cmd+Up, ...) are not ours.
+      // The start and the end of the document — Cmd+Up / Cmd+Down on a Mac,
+      // Home / End, Ctrl+Home / Ctrl+End — at once: the browser's smooth
+      // scroll paints a page at every frame of the way.
+      const command = (isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey;
+      const plain = !(e.metaKey || e.ctrlKey || e.altKey || e.shiftKey);
+      const edge =
+        (isMac && command && (e.key === "ArrowUp" || e.key === "ArrowDown")) ||
+        ((plain || command) && (e.key === "Home" || e.key === "End"));
+      if (previewMode === PreviewMode.Doc && edge) {
+        e.preventDefault();
+        const start = e.key === "ArrowUp" || e.key === "Home";
+        resizeTarget.scrollTo({ top: start ? 0 : resizeTarget.scrollHeight, behavior: "instant" });
+        return;
+      }
+      // Other browser and OS shortcuts (Cmd+T, Ctrl+L, ...) are not ours.
       if (e.metaKey || e.ctrlKey || e.altKey) {
         return;
       }
