@@ -47,6 +47,31 @@ body.toc-open #typst-toc {
   display: flex;
 }
 
+/* the right edge, dragged to resize the panel */
+#typst-toc-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  z-index: 1;
+  cursor: col-resize;
+}
+
+#typst-toc-grip:hover,
+body.toc-resizing #typst-toc-grip {
+  background: linear-gradient(to right, transparent 3px, var(--toc-accent) 3px 5px, transparent 5px);
+}
+
+body.toc-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.toc-resizing #typst-toc-button {
+  display: none;
+}
+
 #typst-container.toc-open {
   padding-left: var(--typst-toc-width);
 }

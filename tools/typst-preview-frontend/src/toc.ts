@@ -5,8 +5,9 @@ import type { TypstDomWindowElement } from "typst-dom/index.preview.mjs";
 // top left) opens it with its filter focused: type a few letters of a heading
 // or its number, arrows to choose, Enter to go there; a click goes there too.
 // The heading being read is marked as the document scrolls. The server sends
-// the outline with every compile (`outline,` and its JSON), and whether the
-// panel is open is kept per document, like the view (ws.ts).
+// the outline with every compile (`outline,` and its JSON). The panel's right
+// edge drags to another width. Whether it is open, and its width, are kept per
+// document, like the view (ws.ts).
 
 interface OutlineItem {
   title: string;
@@ -291,6 +292,65 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
     }
   }
 
+  // ---------------------------------------------------------------- width
+
+  // Only the panel follows the drag, over the document: the document fits
+  // itself to the new width once, on release (a refit repaints the whole
+  // view). A double click puts back the default width.
+  const widthKey = `${opts.storageKey} width`;
+  const grip = document.createElement("div");
+  grip.id = "typst-toc-grip";
+  panel.append(grip);
+
+  const clampWidth = (px: number) => Math.round(Math.max(160, Math.min(px, window.innerWidth * 0.6)));
+
+  function setWidth(px: number | undefined) {
+    const root = document.documentElement.style;
+    try {
+      if (px === undefined) {
+        root.removeProperty("--typst-toc-width");
+        localStorage.removeItem(widthKey);
+      } else {
+        root.setProperty("--typst-toc-width", `${px}px`);
+        localStorage.setItem(widthKey, `${px}`);
+      }
+    } catch (_) {
+      // storage unavailable: the width lasts until the page goes
+    }
+    if (isOpen()) {
+      opts.refit();
+    }
+  }
+
+  function onGripDown(event: PointerEvent) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    document.body.classList.add("toc-resizing");
+    const startX = event.clientX;
+    const startWidth = panel.getBoundingClientRect().width;
+    let width = startWidth;
+    const move = (e: PointerEvent) => {
+      width = clampWidth(startWidth + e.clientX - startX);
+      panel.style.width = `${width}px`;
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      document.body.classList.remove("toc-resizing");
+      panel.style.removeProperty("width");
+      if (width !== startWidth) {
+        setWidth(width);
+      }
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  }
+
   let frame = 0;
   const subscriptions: Subscription[] = [
     fromEvent(main, "scroll").subscribe(() => {
@@ -304,11 +364,17 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
     fromEvent<KeyboardEvent>(filter, "keydown").subscribe(onFilterKey),
     fromEvent(filter, "input").subscribe(applyFilter),
     fromEvent(button, "click").subscribe(() => setOpen(!isOpen(), false)),
+    fromEvent<PointerEvent>(grip, "pointerdown").subscribe(onGripDown),
+    fromEvent(grip, "dblclick").subscribe(() => setWidth(undefined)),
   ];
 
   let open = false;
   try {
     open = localStorage.getItem(opts.storageKey) === "1";
+    const width = Number.parseFloat(localStorage.getItem(widthKey) || "");
+    if (width > 0) {
+      document.documentElement.style.setProperty("--typst-toc-width", `${clampWidth(width)}px`);
+    }
   } catch (_) {
     // storage unavailable
   }
