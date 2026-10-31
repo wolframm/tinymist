@@ -202,6 +202,7 @@ impl Previewer {
                 );
                 match h.format {
                     ExportTarget::Paged => {
+                        let outline_tx = svg.0.clone();
                         let render_actor = actor::render::RenderActor::new(
                             h.renderer_tx.subscribe(),
                             page_gone.clone(),
@@ -216,6 +217,7 @@ impl Previewer {
                             page_gone.clone(),
                             h.doc_sender.clone(),
                             h.editor_tx.clone(),
+                            outline_tx,
                             h.span_interner,
                         );
                         tokio::spawn(outline_render_actor.run());

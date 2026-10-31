@@ -17,6 +17,7 @@ import { WebSocketSubject, webSocket } from "rxjs/webSocket";
 import { Subject, Subscription, buffer, debounceTime, fromEvent, tap } from "rxjs";
 import { handleHtmlPreviewFrame } from "./html-preview";
 import { installLinkHistory } from "./nav";
+import { Toc, installToc } from "./toc";
 export { PreviewMode } from "typst-dom/typst-doc.mjs";
 
 // for debug propose
@@ -47,6 +48,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   let disposed = false;
   let $ws: WebSocketSubject<ArrayBuffer> | undefined = undefined;
   const subsribes: Subscription[] = [];
+  let toc: Toc | undefined = undefined;
 
   function createSvgDocument(kModule: RenderSession) {
     const hookedElem = document.getElementById("typst-app")! as TypstDomHookedElement;
@@ -84,6 +86,22 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           .pipe(debounceTime(500))
           .subscribe(() => svgDoc.impl.partialRendering && svgDoc.addViewportChange()),
       );
+    }
+
+    if (previewMode === PreviewMode.Doc && !isContentPreview) {
+      const panel = installToc(windowElem, {
+        jump(page, x, y) {
+          // as a link in the document does, so Cmd+[ comes back (nav.ts)
+          const rootElem = document.getElementById("typst-app")?.firstElementChild;
+          if (rootElem) {
+            (window as any).handleTypstLocation(rootElem, page, x, y);
+          }
+        },
+        refit: () => svgDoc.impl.refit(),
+        storageKey: `typst-preview-toc ${document.title}`,
+      });
+      toc = panel;
+      subsribes.push(new Subscription(() => panel.dispose()));
     }
 
     // The view as it changes, and as the page goes (restoreView). A zoom
@@ -210,6 +228,10 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
 
     const isMac = navigator.platform.toUpperCase().indexOf("MAC") !== -1;
     window.addEventListener("keydown", (e) => {
+      // Typing in the contents panel's filter is not for us.
+      if ((e.target as Element)?.id === "typst-toc-filter") {
+        return;
+      }
       // The start and the end of the document — Cmd+Up / Cmd+Down on a Mac,
       // Home / End, Ctrl+Home / Ctrl+End — at once: the browser's smooth
       // scroll paints a page at every frame of the way.
@@ -282,6 +304,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           break;
         case "t":
           toggleTheme();
+          break;
+        case "o":
+          if (toc) {
+            removeHelp();
+            toc.toggle();
+          } else {
+            handled = false;
+          }
           break;
         default:
           handled = false;
@@ -643,7 +673,11 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         ensureInvertColors(document.getElementById("typst-app"), strategy);
         return;
       } else if (message[0] === "outline") {
-        console.log("Experimental feature: outline rendering");
+        try {
+          toc?.update(JSON.parse(dec.decode(message[1] as Uint8Array)));
+        } catch (e) {
+          console.error("outline", e);
+        }
         return;
       }
 

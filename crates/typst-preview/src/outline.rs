@@ -14,6 +14,8 @@ use crate::debug_loc::SpanInternerImpl;
 #[derive(Debug, Clone)]
 pub(crate) struct HeadingNode {
     body: Content,
+    /// The heading's number as displayed, e.g. `2.3`; none when unnumbered.
+    numbers: Option<String>,
     span: Span,
     position: DocumentPosition,
     level: NonZeroUsize,
@@ -120,6 +122,7 @@ impl HeadingNode {
                 .get(StyleChain::default())
                 .unwrap_or_else(|| element.outlined.get(StyleChain::default())),
             body: element.body.clone(),
+            numbers: element.numbers.as_ref().map(|n| n.to_string()),
             span: element.span(),
             children: Vec::new(),
         }
@@ -135,6 +138,9 @@ pub struct Outline {
 struct OutlineItem {
     /// Plain text title.
     title: String,
+    /// The heading's number as displayed, e.g. `2.3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    numbers: Option<String>,
     /// Span id in hex-format.
     span: Option<String>,
     /// The resolved position in the document.
@@ -176,6 +182,7 @@ fn outline_item(interner: &mut SpanInternerImpl, src: &HeadingNode, res: &mut Ve
 
     res.push(OutlineItem {
         title,
+        numbers: src.numbers.clone(),
         span: Some(span.to_hex()),
         position: Some(src.position),
         children,

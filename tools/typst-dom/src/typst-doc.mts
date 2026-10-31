@@ -343,6 +343,13 @@ export class TypstDocumentContext<O = any> {
     }
   }
 
+  /// Fit the document to its container again, without rendering it again: the
+  /// container changed width (the contents panel opened or closed).
+  refit() {
+    this.cachedDOMState = this.retrieveDOMState();
+    this.r.rescale();
+  }
+
   /// Remember the document point under `clientX`, `clientY` so the coming rescale
   /// keeps it there. The svg document implements it.
   captureZoomAnchor(_clientX: number, _clientY: number) {}

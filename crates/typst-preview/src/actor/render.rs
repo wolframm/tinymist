@@ -305,6 +305,10 @@ pub struct OutlineRenderActor {
     page_gone: watch::Receiver<()>,
     document: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     editor_tx: mpsc::UnboundedSender<EditorActorRequest>,
+    /// The page's own channel: its contents panel shows the outline too.
+    page_tx: mpsc::UnboundedSender<Vec<u8>>,
+    /// The outline the page has, so that an unchanged one is not sent again.
+    page_outline: Vec<u8>,
 
     span_interner: SpanInterner,
 }
@@ -315,6 +319,7 @@ impl OutlineRenderActor {
         page_gone: watch::Receiver<()>,
         document: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         editor_tx: mpsc::UnboundedSender<EditorActorRequest>,
+        page_tx: mpsc::UnboundedSender<Vec<u8>>,
         span_interner: SpanInterner,
     ) -> Self {
         Self {
@@ -322,6 +327,8 @@ impl OutlineRenderActor {
             page_gone,
             document,
             editor_tx,
+            page_tx,
+            page_outline: Vec::new(),
             span_interner,
         }
     }
@@ -358,6 +365,16 @@ impl OutlineRenderActor {
                 continue;
             };
             let data = self.outline(&document).await;
+            let mut page_outline = b"outline,".to_vec();
+            if serde_json::to_writer(&mut page_outline, &data).is_ok()
+                && page_outline != self.page_outline
+            {
+                if self.page_tx.send(page_outline.clone()).is_err() {
+                    log::info!("OutlineRenderActor: the page's channel is closed");
+                    break;
+                }
+                self.page_outline = page_outline;
+            }
             log::debug!("OutlineRenderActor: sending outline");
             let Ok(_) = self.editor_tx.send(EditorActorRequest::Outline(data)) else {
                 log::info!("OutlineRenderActor: outline_sender is dropped");
