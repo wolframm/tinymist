@@ -44,10 +44,11 @@ Arne's build of tinymist: the upstream release tag plus the fixes below, install
 ## The hub: previews on a phone
 
 `tinymist hub` runs as the launch agent `com.user.typst-hub`
-(`~/Library/LaunchAgents/com.user.typst-hub.plist`), started through Reply Radar's copy of
-Apple's Python (`~/Library/Application Support/replyradar/bin/py`), which holds the Documents
-access: the binary itself is ad-hoc signed and would be a new identity to macOS after every
-build. It listens on `127.0.0.1:23690`; `tailscale serve --bg --https=8443
+(`~/Library/LaunchAgents/com.user.typst-hub.plist`, `bash -c exec …`). macOS treats tinymist
+as its own program for the Documents permission, whatever starts it, and an ad-hoc signed
+build is a new program to it: after every rebuild it asks once ("tinymist would like to
+access files in your Documents folder"), and the hub's lists and previews wait until the
+answer. It listens on `127.0.0.1:23690`; `tailscale serve --bg --https=8443
 http://127.0.0.1:23690` publishes it inside the tailnet only (never `funnel`). The plist names
 the host (`<mac>.<tailnet>.ts.net:8443`) and the Tailscale login a request must carry.
 Favourites: `~/Library/Application Support/tinymist-hub/favorites.json`; log:
