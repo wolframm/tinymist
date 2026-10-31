@@ -67,7 +67,17 @@ bin=$CARGO_TARGET_DIR/release/tinymist
 
 # ---------------------------------------------------------------- install
 mkdir -p ~/.local/bin
-cp "$bin" ~/.local/bin/tinymist.new && mv ~/.local/bin/tinymist.new ~/.local/bin/tinymist
+cp "$bin" ~/.local/bin/tinymist.new
+# macOS grants ~/Documents to a program by its signature. The linker's ad-hoc signature
+# changes with every build, so each build would ask again; signed with the same
+# self-signed certificate and identifier, every build is the same program to it.
+sign="tinymist local"
+if security find-identity -p codesigning | grep -qF "\"$sign\""; then
+  codesign --force --sign "$sign" --identifier tinymist --timestamp=none ~/.local/bin/tinymist.new
+else
+  echo "no code-signing certificate \"$sign\": macOS will ask for Documents access again" >&2
+fi
+mv ~/.local/bin/tinymist.new ~/.local/bin/tinymist
 echo "installed: $(~/.local/bin/tinymist -V) (flavor on $(cat .flavor-base))"
 # the preview hub (FLAVOR.md) runs the binary too: restart it on the new one
 if launchctl print "gui/$(id -u)/com.user.typst-hub" >/dev/null 2>&1; then

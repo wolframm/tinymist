@@ -46,9 +46,11 @@ Arne's build of tinymist: the upstream release tag plus the fixes below, install
 `tinymist hub` runs as the launch agent `com.user.typst-hub`
 (`~/Library/LaunchAgents/com.user.typst-hub.plist`, `bash -c exec …`). macOS treats tinymist
 as its own program for the Documents permission, whatever starts it, and an ad-hoc signed
-build is a new program to it: after every rebuild it asks once ("tinymist would like to
-access files in your Documents folder"), and the hub's lists and previews wait until the
-answer. It listens on `127.0.0.1:23690`; `tailscale serve --bg --https=8443
+build is a new program to it. `rebuild.sh` therefore signs every build with the self-signed
+code-signing certificate "tinymist local" (login keychain) and the identifier `tinymist`, so
+the one grant holds across builds. Without the certificate it warns, macOS asks again after
+the install ("tinymist would like to access files in your Documents folder"), and the hub's
+lists and previews wait until the answer. It listens on `127.0.0.1:23690`; `tailscale serve --bg --https=8443
 http://127.0.0.1:23690` publishes it inside the tailnet only (never `funnel`). The plist names
 the host (`<mac>.<tailnet>.ts.net:8443`) and the Tailscale login a request must carry.
 Favourites: `~/Library/Application Support/tinymist-hub/favorites.json`; log:
