@@ -61,6 +61,10 @@ pub struct PreviewConfig {
     pub refresh_style: TaskWhen,
     /// The invert colors setting for the preview.
     pub invert_colors: String,
+    /// No editor is attached: a click on a link into another document is sent
+    /// back to the page that was clicked (`navigate,` and the target), which
+    /// opens the target itself; other clicks go nowhere.
+    pub navigate_in_page: bool,
 }
 
 /// Gets the HTML for the frontend by a given preview mode and server to connect
@@ -210,6 +214,7 @@ impl Previewer {
                             h.editor_tx.clone(),
                             svg.0,
                             h.webview_tx,
+                            h.navigate_in_page,
                         );
                         tokio::spawn(render_actor.run());
                         let outline_render_actor = actor::render::OutlineRenderActor::new(
@@ -369,6 +374,7 @@ impl PreviewBuilder {
             invert_colors: config.invert_colors,
             renderer_tx: renderer_mailbox.0.clone(),
             enable_partial_rendering: config.enable_partial_rendering,
+            navigate_in_page: config.navigate_in_page,
             doc_sender,
             pending_scroll,
         };
@@ -687,6 +693,7 @@ struct DataPlane {
     editor_tx: mpsc::UnboundedSender<EditorActorRequest>,
     enable_partial_rendering: bool,
     invert_colors: String,
+    navigate_in_page: bool,
     renderer_tx: broadcast::Sender<RenderActorRequest>,
     doc_sender: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     pending_scroll: PendingScrollSlot,

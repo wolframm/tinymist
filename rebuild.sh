@@ -69,5 +69,9 @@ bin=$CARGO_TARGET_DIR/release/tinymist
 mkdir -p ~/.local/bin
 cp "$bin" ~/.local/bin/tinymist.new && mv ~/.local/bin/tinymist.new ~/.local/bin/tinymist
 echo "installed: $(~/.local/bin/tinymist -V) (flavor on $(cat .flavor-base))"
+# the preview hub (FLAVOR.md) runs the binary too: restart it on the new one
+if launchctl print "gui/$(id -u)/com.user.typst-hub" >/dev/null 2>&1; then
+  launchctl kickstart -k "gui/$(id -u)/com.user.typst-hub" && echo "restarted the preview hub"
+fi
 echo "homebrew:  $(/opt/homebrew/bin/tinymist -V 2>/dev/null || echo none)"
 echo "restart the language server (PyCharm's status-bar widget, or PyCharm) to run the new binary"

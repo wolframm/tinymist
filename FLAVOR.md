@@ -37,7 +37,20 @@ Arne's build of tinymist: the upstream release tag plus the fixes below, install
 | feat(preview): a reload keeps the zoom and the place | a reload — the browser's, or the page's own when its server comes back — reset the zoom to the window's width and put the page at its top (the server-restart reload kept a raw scroll offset, which lands elsewhere at any zoom but 100 %). The page saves its zoom and the document point at the top left of the view, held to its page as the zoom anchor holds it, in localStorage under the document's title (the origin is the document's port), as they change and when the page goes; its first render puts both back. A label in the address or a scroll from the editor wins over the place | flavor |
 | fix(preview): a long contents page no longer freezes the page | bringing a table of contents into view froze the page for 5–15 s (Chrome's `PaintArtifactCompositor::Update`): every text item carries its own selection layer, and a contents page's leader dots are one item per dot. The layers of a fill — three or more items in a row with the same single sign — are hidden (10.8 s → 0.5 s). A scroll no longer re-renders the whole document 0.5 s later when partial rendering is off; Cmd+↑ / Cmd+↓, Home / End and any jump over more than two screens are instant | flavor |
 | feat(preview): a contents panel | `o` or the button at the top left opens the outline at the left of the page, the document narrowing beside it: numbers and titles from the server (`outline,` on the data plane, with each heading's displayed number), a filter focused on `o` (words of a number or title, ↑ ↓, Enter), a click or Enter jumps as a link does (Cmd+[ comes back), the heading being read is marked; the right edge drags to another width (the document refits on release, a double click resets it); open or closed and the width are kept per document | flavor |
+| feat(hub): the previews of a documents folder, for a phone | `tinymist hub` serves a home page (favourite folders, the documents changed last, a search over the favourites, a browser of the folder) and `/v/<path>`, the preview of one document: it starts a `tinymist preview` for it on first use, on loopback ports, passes the page's connection through and compresses large frames (a 42 MB document arrives as 7 MB). At most four previews run; one stops 15 min after its last page. A request must name the published host and carry a permitted `Tailscale-User-Login`. Previews run with `--navigate-in-page`: a click on a link into another document makes that page open the target at its label; other clicks go nowhere. On a narrow screen the contents panel lies over the document, jumps are browser history steps, and a document with a few wide sheets first fits its commonest page | flavor only |
 | build: bundle the locally built preview page | un-comments the `tinymist-assets = { path = ... }` patch in `Cargo.toml` | flavor only |
+
+## The hub: previews on a phone
+
+`tinymist hub` runs as the launch agent `com.user.typst-hub`
+(`~/Library/LaunchAgents/com.user.typst-hub.plist`), started through Reply Radar's copy of
+Apple's Python (`~/Library/Application Support/replyradar/bin/py`), which holds the Documents
+access: the binary itself is ad-hoc signed and would be a new identity to macOS after every
+build. It listens on `127.0.0.1:23690`; `tailscale serve --bg --https=8443
+http://127.0.0.1:23690` publishes it inside the tailnet only (never `funnel`). The plist names
+the host (`<mac>.<tailnet>.ts.net:8443`) and the Tailscale login a request must carry.
+Favourites: `~/Library/Application Support/tinymist-hub/favorites.json`; log:
+`~/Library/Logs/typst-hub.log`. `rebuild.sh` restarts the agent after an install.
 
 ## Rebuilding for a new upstream release
 

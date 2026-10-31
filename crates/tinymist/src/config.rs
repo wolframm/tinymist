@@ -609,6 +609,7 @@ impl Config {
             refresh_style: self.preview.refresh.clone().unwrap_or(TaskWhen::OnType),
             invert_colors: serde_json::to_string(&self.preview.invert_colors)
                 .unwrap_or_else(|_| "never".to_string()),
+            navigate_in_page: false,
         }
     }
 

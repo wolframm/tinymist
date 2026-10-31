@@ -155,6 +155,12 @@ pub struct PreviewArgs {
     /// This is hidden from the CLI.
     #[clap(long, hide(true))]
     pub refresh_style: Option<RefreshStyle>,
+
+    /// No editor is attached (the hub): a click on a link into another
+    /// document makes the clicked page open that document; other clicks go
+    /// nowhere.
+    #[clap(long, hide(true))]
+    pub navigate_in_page: bool,
 }
 
 /// Resolves the browser page title for preview HTML.
@@ -185,6 +191,7 @@ impl PreviewArgs {
                 Some(s) => s.clone(),
                 None => config.invert_colors.clone(),
             },
+            navigate_in_page: self.navigate_in_page || config.navigate_in_page,
         }
     }
 }

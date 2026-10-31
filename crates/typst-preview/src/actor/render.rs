@@ -42,6 +42,8 @@ pub struct RenderActor {
     editor_conn_sender: mpsc::UnboundedSender<EditorActorRequest>,
     svg_sender: mpsc::UnboundedSender<Vec<u8>>,
     webview_sender: broadcast::Sender<WebviewActorRequest>,
+    /// See [`crate::PreviewConfig::navigate_in_page`].
+    navigate_in_page: bool,
 }
 
 impl RenderActor {
@@ -52,6 +54,7 @@ impl RenderActor {
         editor_conn_sender: mpsc::UnboundedSender<EditorActorRequest>,
         svg_sender: mpsc::UnboundedSender<Vec<u8>>,
         webview_sender: broadcast::Sender<WebviewActorRequest>,
+        navigate_in_page: bool,
     ) -> Self {
         Self {
             mailbox,
@@ -61,6 +64,7 @@ impl RenderActor {
             editor_conn_sender,
             svg_sender,
             webview_sender,
+            navigate_in_page,
         }
     }
 
@@ -177,7 +181,19 @@ impl RenderActor {
     }
 
     fn editor_resolve_span_range(&self, span_range: Range<SourceSpanOffset>) -> Option<()> {
-        let req = EditorActorRequest::DocToSrcJump(self.resolve_span_range(span_range)?);
+        let info = self.resolve_span_range(span_range)?;
+        if self.navigate_in_page {
+            // Every page's render actor hears every click, so the page acts on
+            // it only if it was clicked itself (the frontend checks).
+            if info.cross_document {
+                let target = serde_json::json!({ "filepath": info.filepath, "label": info.label });
+                let mut data = b"navigate,".to_vec();
+                serde_json::to_writer(&mut data, &target).ok()?;
+                let _ = self.svg_sender.send(data);
+            }
+            return Some(());
+        }
+        let req = EditorActorRequest::DocToSrcJump(info);
         let _ = self.editor_conn_sender.send(req);
 
         Some(())
@@ -188,8 +204,7 @@ impl RenderActor {
 
         // A click on a link into another document goes to the linked place in
         // that document, not to the link's own source.
-        if let Some(target) =
-            view.resolve_cross_document_link(range.start.span, range.start.offset)
+        if let Some(target) = view.resolve_cross_document_link(range.start.span, range.start.offset)
         {
             return Some(target);
         }

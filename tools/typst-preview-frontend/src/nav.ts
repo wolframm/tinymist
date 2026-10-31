@@ -12,7 +12,7 @@ import type { TypstDomWindowElement } from "typst-dom/index.preview.mjs";
 /// typst-dom: 7 % from the left, 38.2 % from the top of the view), as
 /// `page x y` in pt — what `panelScrollByPosition` puts back there, whatever
 /// the zoom by then.
-function readingPoint(windowElem: TypstDomWindowElement): string {
+export function readingPoint(windowElem: TypstDomWindowElement): string {
   const main = document.getElementById("typst-container-main");
   const svg = document.getElementById("typst-app")?.firstElementChild;
   const dataWidth = Number.parseFloat(svg?.getAttribute("data-width") || "0");

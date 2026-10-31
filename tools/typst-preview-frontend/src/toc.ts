@@ -7,7 +7,9 @@ import type { TypstDomWindowElement } from "typst-dom/index.preview.mjs";
 // The heading being read is marked as the document scrolls. The server sends
 // the outline with every compile (`outline,` and its JSON). The panel's right
 // edge drags to another width. Whether it is open, and its width, are kept per
-// document, like the view (ws.ts).
+// document, like the view (ws.ts). On a narrow screen (a phone) the panel lies
+// over the document instead, and goes once a heading is chosen or the
+// document is tapped.
 
 interface OutlineItem {
   title: string;
@@ -39,6 +41,8 @@ export interface TocOptions {
   refit(): void;
   storageKey: string;
 }
+
+const narrow = () => window.matchMedia("(max-width: 700px)").matches;
 
 const fold = (s: string) =>
   s
@@ -88,7 +92,9 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
       } catch (_) {
         // storage unavailable: the panel starts closed next time
       }
-      opts.refit();
+      if (!narrow()) {
+        opts.refit();
+      }
     }
     if (open) {
       markCurrent(true);
@@ -156,7 +162,11 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
       return;
     }
     opts.jump(entry.page, entry.x, entry.y);
-    main.focus({ preventScroll: true });
+    if (narrow()) {
+      setOpen(false, false);
+    } else {
+      main.focus({ preventScroll: true });
+    }
   }
 
   // ---------------------------------------------------------------- filter
@@ -317,7 +327,7 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
     } catch (_) {
       // storage unavailable: the width lasts until the page goes
     }
-    if (isOpen()) {
+    if (isOpen() && !narrow()) {
       opts.refit();
     }
   }
@@ -366,6 +376,11 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
     fromEvent(button, "click").subscribe(() => setOpen(!isOpen(), false)),
     fromEvent<PointerEvent>(grip, "pointerdown").subscribe(onGripDown),
     fromEvent(grip, "dblclick").subscribe(() => setWidth(undefined)),
+    fromEvent(main, "click").subscribe(() => {
+      if (narrow() && isOpen()) {
+        setOpen(false, false);
+      }
+    }),
   ];
 
   let open = false;
@@ -378,7 +393,7 @@ export function installToc(windowElem: TypstDomWindowElement, opts: TocOptions):
   } catch (_) {
     // storage unavailable
   }
-  if (open) {
+  if (open && !narrow()) {
     setOpen(true, false);
   }
 

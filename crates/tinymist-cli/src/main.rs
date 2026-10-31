@@ -10,6 +10,8 @@ mod cmd {
     #[cfg(feature = "dap")]
     pub mod dap;
     pub mod generate_script;
+    #[cfg(feature = "preview")]
+    pub mod hub;
     pub mod lint;
     pub mod lsp;
     #[cfg(feature = "export")]
@@ -97,6 +99,9 @@ enum Commands {
     /// Run preview server
     #[cfg(feature = "preview")]
     Preview(tinymist::tool::preview::PreviewCliArgs),
+    /// Serve the previews of a documents folder to a phone (through `tailscale serve`)
+    #[cfg(feature = "preview")]
+    Hub(crate::hub::HubArgs),
     /// Run compile command like `typst-cli compile`
     #[cfg(feature = "export")]
     #[clap(alias = "c")]
@@ -166,6 +171,8 @@ fn main() -> Result<()> {
         Commands::Test(test) => test.verbose,
         #[cfg(feature = "preview")]
         Commands::Preview(preview) => preview.verbose,
+        #[cfg(feature = "preview")]
+        Commands::Hub(..) => true,
 
         // Long-running commands, usually run from an editor.
         Commands::Lsp(..) => true,
@@ -199,6 +206,8 @@ fn main() -> Result<()> {
         Commands::Query(cmds) => crate::query::query_main(cmds),
         #[cfg(feature = "preview")]
         Commands::Preview(args) => block_on(crate::preview::preview_main(args)),
+        #[cfg(feature = "preview")]
+        Commands::Hub(args) => block_on(crate::hub::hub_main(args)),
         #[cfg(feature = "export")]
         Commands::Compile(args) => block_on(crate::compile::compile_main(args)),
         Commands::Lint(args) => crate::lint::lint_main(args),

@@ -189,3 +189,35 @@ body.toc-resizing #typst-toc-button {
 body.toc-open #typst-toc-button {
   left: calc(var(--typst-toc-width) + 6px);
 }
+
+/* A phone: the panel lies over the document, which keeps its width. */
+@media (max-width: 700px) {
+  #typst-container.toc-open {
+    padding-left: 0;
+  }
+
+  #typst-toc {
+    width: min(85vw, var(--typst-toc-width));
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.3);
+    font-size: 15px;
+    line-height: 1.25;
+  }
+
+  #typst-toc-grip {
+    display: none;
+  }
+
+  /* below 16px Safari zooms the page into the field */
+  #typst-toc-filter {
+    font-size: 16px;
+  }
+
+  .typst-toc-entry {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  body.toc-open #typst-toc-button {
+    left: calc(min(85vw, var(--typst-toc-width)) + 8px);
+  }
+}

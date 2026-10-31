@@ -18,6 +18,15 @@ import { Subject, Subscription, buffer, debounceTime, fromEvent, tap } from "rxj
 import { handleHtmlPreviewFrame } from "./html-preview";
 import { installLinkHistory } from "./nav";
 import { Toc, installToc } from "./toc";
+import {
+  hub,
+  hubFitCommonPage,
+  hubInflater,
+  hubNavigate,
+  hubProbeFailed,
+  hubStatus,
+  installHubPage,
+} from "./hub";
 export { PreviewMode } from "typst-dom/typst-doc.mjs";
 
 // for debug propose
@@ -49,6 +58,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   let $ws: WebSocketSubject<ArrayBuffer> | undefined = undefined;
   const subsribes: Subscription[] = [];
   let toc: Toc | undefined = undefined;
+  // What names this document in the page's storage. Under the hub every
+  // document shares one origin, and two can have the same file name.
+  const docKey = hub ? hub.path : document.title;
 
   function createSvgDocument(kModule: RenderSession) {
     const hookedElem = document.getElementById("typst-app")! as TypstDomHookedElement;
@@ -98,7 +110,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           }
         },
         refit: () => svgDoc.impl.refit(),
-        storageKey: `typst-preview-toc ${document.title}`,
+        storageKey: `typst-preview-toc ${docKey}`,
       });
       toc = panel;
       subsribes.push(new Subscription(() => panel.dispose()));
@@ -328,6 +340,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           windowElem.typstWebsocket.send(message);
         }
       }),
+      ...installHubPage(windowElem),
     );
 
     return svgDoc;
@@ -366,10 +379,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           if (res.ok) {
             location.reload();
           } else {
+            hubProbeFailed(res);
             setTimeout(probe, 1000);
           }
         })
-        .catch(() => setTimeout(probe, 1000));
+        .catch(() => {
+          hubProbeFailed(undefined);
+          setTimeout(probe, 1000);
+        });
     setTimeout(probe, 500);
   }
 
@@ -402,7 +419,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   // closed tab keeps them too; the origin is the document's port, and the key
   // names the document, because a port passes to another document when that
   // one's own port is taken.
-  const viewKey = `typst-preview-view ${document.title}`;
+  const viewKey = `typst-preview-view ${docKey}`;
   interface SavedView {
     scaleRatio: number;
     point: ViewPoint;
@@ -448,6 +465,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     const view = keepsView ? loadView() : undefined;
     if (view === undefined) {
       viewRestored = true;
+      if (keepsView) {
+        hubFitCommonPage(svgDoc);
+      }
       return;
     }
     svgDoc.impl.setScaleRatio(view.scaleRatio);
@@ -466,7 +486,8 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         viewRestored = true;
         return;
       }
-      if (++tries < 100) {
+      // a minute: a phone can take many seconds over its first render
+      if (++tries < 600) {
         setTimeout(attempt, 100);
       } else {
         viewRestored = true;
@@ -492,6 +513,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           svgDoc.reset();
           windowElem.typstWebsocket.send("current");
           socketOpen = true;
+          hubStatus(null);
           landOnAddressLabel();
         },
       },
@@ -529,8 +551,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
 
     // window.typstWebsocket = new WebSocket("ws://127.0.0.1:23625");
 
+    const receive = hubInflater((data) => batchMessageChannel.next(data));
     $ws.subscribe({
-      next: (data) => batchMessageChannel.next(data), // Called whenever there is a message from the server.
+      next: receive, // Called whenever there is a message from the server.
       error: (err) => console.log("WebSocket Error: ", err), // Called if at any point WebSocket API signals some kind of error.
       complete: () => console.log("complete"), // Called when connection is closed (for whatever reason).
     });
@@ -671,6 +694,9 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
           (JSON.parse(rawStrategy) as StrategyMap);
         console.log("Experimental feature: invert colors strategy taken:", strategy);
         ensureInvertColors(document.getElementById("typst-app"), strategy);
+        return;
+      } else if (message[0] === "navigate") {
+        hubNavigate(dec.decode(message[1] as Uint8Array));
         return;
       } else if (message[0] === "outline") {
         try {
