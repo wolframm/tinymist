@@ -5,7 +5,10 @@ use reflexo_typst::debug_loc::DocumentPosition;
 use tinymist_std::error::IgnoreLogging;
 use tokio::sync::{broadcast, mpsc};
 
-use super::{editor::EditorActorRequest, render::RenderActorRequest};
+use super::{
+    editor::EditorActorRequest,
+    render::{PageId, RenderActorRequest},
+};
 use crate::{
     CompileView, NavigateMessage, PendingScroll, ViewerWindowStateMessage, WsMessage,
     actor::editor::DocToSrcJumpResolveRequest,
@@ -38,6 +41,8 @@ fn positions_req(event: &'static str, positions: Vec<DocumentPosition>) -> Strin
 }
 
 pub struct WebviewActor<'a, C> {
+    /// The page this actor talks to.
+    page: PageId,
     webview_websocket_conn: std::pin::Pin<&'a mut C>,
     svg_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
     mailbox: broadcast::Receiver<WebviewActorRequest>,
@@ -70,7 +75,9 @@ where
             svg: mpsc::unbounded_channel(),
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        page: PageId,
         websocket_conn: std::pin::Pin<&'a mut C>,
         svg_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
         broadcast_sender: broadcast::Sender<WebviewActorRequest>,
@@ -81,6 +88,7 @@ where
         deferred_scroll: Option<PendingScroll>,
     ) -> Self {
         Self {
+            page,
             webview_websocket_conn: websocket_conn,
             svg_receiver,
             mailbox,
@@ -189,7 +197,7 @@ where
                         }
                     };
                     if msg == "current" {
-                        self.render_sender.send(RenderActorRequest::RenderFullLatest).log_error("WebViewActor");
+                        self.render_sender.send(RenderActorRequest::RenderFullLatest(self.page)).log_error("WebViewActor");
                     } else if msg.starts_with("srclocation") {
                         let location = msg.split(' ').nth(1).unwrap();
                         self.editor_sender.send(EditorActorRequest::DocToSrcJumpResolve(

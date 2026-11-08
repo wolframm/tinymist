@@ -35,6 +35,10 @@ use crate::actor::render::RenderActorRequest;
 use crate::actor::webview::WebviewActorRequest;
 use crate::debug_loc::SpanInterner;
 
+/// The pages' ids, one per connection, for the render requests that are a
+/// page's own.
+static NEXT_PAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 type StopFuture = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 /// Configure the preview mode.
@@ -194,7 +198,9 @@ impl Previewer {
                 // A scroll the editor asked for while no page was connected
                 // belongs to this page, once it has a document to scroll.
                 let deferred_scroll = h.pending_scroll.lock().take();
+                let page = NEXT_PAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let webview_actor = actor::webview::WebviewActor::new(
+                    page,
                     conn,
                     svg.1,
                     h.webview_tx.clone(),
@@ -208,6 +214,7 @@ impl Previewer {
                     ExportTarget::Paged => {
                         let outline_tx = svg.0.clone();
                         let render_actor = actor::render::RenderActor::new(
+                            page,
                             h.renderer_tx.subscribe(),
                             page_gone.clone(),
                             h.doc_sender.clone(),

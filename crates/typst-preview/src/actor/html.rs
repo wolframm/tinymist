@@ -41,7 +41,7 @@ impl HtmlRenderActor {
             };
             match msg {
                 Ok(
-                    RenderActorRequest::RenderFullLatest | RenderActorRequest::RenderIncremental,
+                    RenderActorRequest::RenderFullLatest(_) | RenderActorRequest::RenderIncremental,
                 ) => {}
                 Ok(_) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
@@ -56,7 +56,7 @@ impl HtmlRenderActor {
             while let Ok(msg) = self.mailbox.try_recv() {
                 if !matches!(
                     msg,
-                    RenderActorRequest::RenderFullLatest | RenderActorRequest::RenderIncremental
+                    RenderActorRequest::RenderFullLatest(_) | RenderActorRequest::RenderIncremental
                 ) {
                     continue;
                 }

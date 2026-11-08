@@ -12,9 +12,16 @@ use crate::outline::Outline;
 use crate::protocol;
 use crate::{CompileView, DocToSrcJumpInfo, ResolveSourceLocRequest};
 
+/// A page connected to the preview, as its actors know it.
+pub type PageId = u64;
+
 #[derive(Debug, Clone)]
 pub enum RenderActorRequest {
-    RenderFullLatest,
+    /// The whole document again, for one page: the one that asked (it has just
+    /// connected, or reconnected). Every page's actors hear it, and the others
+    /// leave it: a full render starts a page's render state afresh, and a page
+    /// that did not ask would have to take the whole document again.
+    RenderFullLatest(PageId),
     RenderIncremental,
     EditorResolveSpanRange(Range<SourceSpanOffset>),
     WebviewResolveFrameLoc(DocumentPosition),
@@ -22,9 +29,9 @@ pub enum RenderActorRequest {
 }
 
 impl RenderActorRequest {
-    pub fn is_full_render(&self) -> bool {
+    pub fn is_full_render(&self, page: PageId) -> bool {
         match self {
-            Self::RenderFullLatest => true,
+            Self::RenderFullLatest(asked) => *asked == page,
             Self::RenderIncremental => false,
             Self::EditorResolveSpanRange(_) => false,
             Self::ResolveSourceLoc(_) => false,
@@ -34,6 +41,8 @@ impl RenderActorRequest {
 }
 
 pub struct RenderActor {
+    /// The page this actor renders for.
+    page: PageId,
     mailbox: broadcast::Receiver<RenderActorRequest>,
     /// Closes when the actor's page disconnects.
     page_gone: watch::Receiver<()>,
@@ -47,7 +56,9 @@ pub struct RenderActor {
 }
 
 impl RenderActor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        page: PageId,
         mailbox: broadcast::Receiver<RenderActorRequest>,
         page_gone: watch::Receiver<()>,
         view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
@@ -57,6 +68,7 @@ impl RenderActor {
         navigate_in_page: bool,
     ) -> Self {
         Self {
+            page,
             mailbox,
             page_gone,
             view,
@@ -75,7 +87,7 @@ impl RenderActor {
     async fn process_message(&mut self, msg: RenderActorRequest) -> bool {
         log::trace!("RenderActor: received message: {msg:?}");
 
-        let res = msg.is_full_render();
+        let res = msg.is_full_render(self.page);
         match msg {
             RenderActorRequest::EditorResolveSpanRange(span_range) => {
                 log::debug!("RenderActor: resolving EditorResolveSpanRange: {span_range:?}");
@@ -97,7 +109,7 @@ impl RenderActor {
 
                 self.resolve_source_loc(req);
             }
-            RenderActorRequest::RenderFullLatest | RenderActorRequest::RenderIncremental => {}
+            RenderActorRequest::RenderFullLatest(_) | RenderActorRequest::RenderIncremental => {}
         }
 
         res
@@ -145,6 +157,20 @@ impl RenderActor {
                 log::info!("RenderActor: svg_sender is dropped");
                 break;
             };
+            // A page without an editor (the hub's, on a phone) holds changes
+            // back while it is read; the version of what it was just sent
+            // tells it whether there is anything to show, and an unchanged
+            // document coming again on a new connection from a changed one.
+            if self.navigate_in_page
+                && let TypstDocument::Paged(paged) = &document
+            {
+                let pages = paged.pages().iter();
+                let version = typst::utils::hash128(&Drawn(pages.map(|p| (&p.frame, &p.fill))));
+                let frame = format!("doc-version,{version:032x}").into_bytes();
+                if self.svg_sender.send(frame).is_err() {
+                    break;
+                }
+            }
         }
         log::info!("RenderActor: exiting")
     }
@@ -311,6 +337,81 @@ impl RenderActor {
     ) -> Option<(SourceSpanOffset, SourceSpanOffset)> {
         let view = self.view.read();
         view.as_ref()?.resolve_frame_loc(pos)
+    }
+}
+
+/// What a document's pages draw, to hash: its version as a page without an
+/// editor sees it. Typst's own hash of the pages covers the source positions
+/// too, which the incremental parser renumbers, so an edit undone, or a
+/// comment changed, would make another version of an unchanged document.
+struct Drawn<'a, I>(I)
+where
+    I: Iterator<Item = (&'a typst::layout::Frame, &'a typst::foundations::Smart<Option<typst::visualize::Paint>>)>
+        + Clone;
+
+impl<'a, I> std::hash::Hash for Drawn<'a, I>
+where
+    I: Iterator<Item = (&'a typst::layout::Frame, &'a typst::foundations::Smart<Option<typst::visualize::Paint>>)>
+        + Clone,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for (frame, fill) in self.0.clone() {
+            fill.hash(state);
+            drawn(frame, state);
+        }
+    }
+}
+
+fn drawn<H: std::hash::Hasher>(frame: &typst::layout::Frame, state: &mut H) {
+    use std::hash::Hash;
+    use typst::layout::FrameItem;
+    use typst::model::Destination;
+    frame.size().hash(state);
+    for (point, item) in frame.items() {
+        point.hash(state);
+        match item {
+            FrameItem::Group(group) => {
+                0u8.hash(state);
+                group.transform.hash(state);
+                group.clip.hash(state);
+                drawn(&group.frame, state);
+            }
+            FrameItem::Text(text) => {
+                1u8.hash(state);
+                text.font.hash(state);
+                text.size.hash(state);
+                text.fill.hash(state);
+                text.stroke.hash(state);
+                text.text.hash(state);
+                for glyph in &text.glyphs {
+                    glyph.id.hash(state);
+                    glyph.x_advance.hash(state);
+                    glyph.x_offset.hash(state);
+                    glyph.y_advance.hash(state);
+                    glyph.y_offset.hash(state);
+                }
+            }
+            FrameItem::Shape(shape, _) => {
+                2u8.hash(state);
+                shape.hash(state);
+            }
+            FrameItem::Image(image, size, _) => {
+                3u8.hash(state);
+                image.hash(state);
+                size.hash(state);
+            }
+            FrameItem::Link(destination, size) => {
+                4u8.hash(state);
+                match destination {
+                    Destination::Url(url) => url.hash(state),
+                    Destination::Position(position) => position.hash(state),
+                    // where a location lands is in the pages already
+                    Destination::Location(_) => {}
+                }
+                size.hash(state);
+            }
+            FrameItem::Tag(_) => {}
+        }
     }
 }
 
