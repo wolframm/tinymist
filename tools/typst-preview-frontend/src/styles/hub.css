@@ -2,6 +2,23 @@
    home, the button that shows the changes waiting, the line that says why
    the page waits, and the last view shown while the document comes. */
 
+/* what the screen shows, at the scale that undoes a pinch (hubChrome) */
+#typst-hub-chrome {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  transform-origin: 0 0;
+  will-change: transform;
+  pointer-events: none;
+}
+
+#typst-hub-chrome > * {
+  pointer-events: auto;
+}
+
 body.typst-hub #typst-toc-button {
   top: 8px;
   width: 36px;

@@ -442,6 +442,42 @@ function isDocFrame(data: ArrayBuffer): boolean {
   return name === "new" || name === "diff-v1";
 }
 
+let chromeElem: HTMLElement | undefined;
+/// The box that holds the buttons, the contents panel and the status line.
+/// Safari's pinch zooms the whole page, things fixed to the window with it: they
+/// grew and left the screen. The box lies over what the screen shows (the visual
+/// viewport) at the scale that undoes the zoom, so what it holds stays in its
+/// corner at its own size, however far the page is zoomed or moved.
+function hubChrome(): HTMLElement {
+  if (chromeElem) {
+    return chromeElem;
+  }
+  const elem = (chromeElem = document.createElement("div"));
+  elem.id = "typst-hub-chrome";
+  document.body.append(elem);
+  const vv = window.visualViewport;
+  if (vv) {
+    let shown = "";
+    const pin = () => {
+      const s = vv.scale;
+      const at = `${vv.offsetLeft}/${vv.offsetTop}/${s}/${vv.width}/${vv.height}`;
+      if (at === shown) {
+        return;
+      }
+      shown = at;
+      elem.style.width = `${vv.width * s}px`;
+      elem.style.height = `${vv.height * s}px`;
+      elem.style.transform = `translate(${vv.offsetLeft}px, ${vv.offsetTop}px) scale(${1 / s})`;
+    };
+    vv.addEventListener("resize", pin);
+    vv.addEventListener("scroll", pin);
+    window.addEventListener("scroll", pin, { passive: true });
+    window.addEventListener("touchend", pin, { passive: true });
+    pin();
+  }
+  return elem;
+}
+
 let updateElem: HTMLButtonElement | undefined;
 /// The button that shows the held changes: there while some change the
 /// document (with versions known, once the held ones' version has come and
@@ -463,7 +499,7 @@ function updateButton() {
   updateElem.innerHTML =
     '<svg viewBox="0 0 16 16"><path d="M13 8.5A5 5 0 1 1 11.3 4.2M13 2.5v3h-3" /></svg>';
   updateElem.addEventListener("click", () => showHeld());
-  document.body.append(updateElem);
+  hubChrome().append(updateElem);
 }
 
 /// After held changes went in: the view back at the place it showed.
@@ -523,7 +559,7 @@ export function hubStatus(text: string | null, ms = 0) {
   if (!statusElem) {
     statusElem = document.createElement("div");
     statusElem.id = "typst-hub-status";
-    document.body.append(statusElem);
+    hubChrome().append(statusElem);
   }
   statusElem.textContent = text;
   if (ms > 0) {
@@ -553,7 +589,14 @@ export function installHubPage(windowElem: TypstDomWindowElement): Subscription[
   home.title = "Documents";
   home.innerHTML =
     '<svg viewBox="0 0 16 16"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3v-3.5h2V13h3V6.5" /></svg>';
-  document.body.append(home);
+  const chrome = hubChrome();
+  for (const id of ["typst-toc", "typst-toc-button"]) {
+    const elem = document.getElementById(id);
+    if (elem) {
+      chrome.append(elem);
+    }
+  }
+  chrome.append(home);
 
   // A jump (a link inside the document, an entry of the contents) is a step
   // in the history; back and forward put the reading point back.
