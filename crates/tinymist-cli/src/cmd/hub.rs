@@ -4,10 +4,13 @@
 //! the tailnet. Its home page lists folders, the favourite ones and the
 //! documents changed last. `/v/<path>` is the preview of one document: the hub
 //! starts a `tinymist preview` for it on first use, on ports of its own on the
-//! loopback, and passes the page's connection through, compressing the large
-//! frames. A preview stops a while after its last page has gone, or when more
-//! than a few run. There is no editor: a click on a link into another document
-//! makes the page open that one (`--navigate-in-page`).
+//! loopback, and keeps a session for each page: one connection to the
+//! preview, which stays while the page is away (a phone closes the page's
+//! connection whenever its screen locks), so that the page, back, gets only
+//! what it missed. Large frames go compressed. A preview stops a while after
+//! its last session has ended, or when more than a few run. There is no
+//! editor: a click on a link into another document makes the page open that
+//! one (`--navigate-in-page`).
 //!
 //! Every request must name the host `tailscale serve` is reached by and carry
 //! the `Tailscale-User-Login` of a permitted user: Serve sets that header from
@@ -16,7 +19,7 @@
 //! The hub only reads: it lists folders and `.typ` files under the documents
 //! folder and previews them; the one thing it writes is the favourites list.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::fs;
@@ -27,6 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
@@ -45,7 +49,7 @@ use tinymist_assets::TYPST_PREVIEW_HTML;
 use tinymist_preview::{PreviewMode, frontend_html};
 use tinymist_std::error::prelude::*;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 
 const HOME_HTML: &str = include_str!("hub/index.html");
 const ICON_PNG: &[u8] = include_bytes!("hub/icon.png");
@@ -56,6 +60,13 @@ const COMPRESS_FROM: usize = 64 * 1024;
 /// A page that has not answered a ping for this long is gone (a phone that
 /// lost its network closes nothing).
 const PAGE_TIMEOUT: Duration = Duration::from_secs(80);
+/// How long a session waits for its page to come back.
+const AWAY: Duration = Duration::from_secs(2 * 60 * 60);
+/// A session whose page is away while this much piles up is given up: the
+/// page gets the whole document again when it comes back.
+const BEHIND_LIMIT: usize = 256 << 20;
+
+type ChildSocket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
 
 /// Serve the previews of a documents folder to a phone (through `tailscale
 /// serve`).
@@ -129,6 +140,7 @@ async fn run(args: HubArgs) -> anyhow::Result<()> {
         favorites_file,
         favorites: Mutex::new(favorites),
         previews: Mutex::default(),
+        sessions: Mutex::default(),
         max_previews: args.max_previews.max(1),
         idle: Duration::from_secs(args.idle_minutes * 60),
         invert_colors: args.invert_colors,
@@ -194,6 +206,8 @@ struct Hub {
     favorites: Mutex<Vec<String>>,
     /// The previews by document, canonical.
     previews: Mutex<HashMap<PathBuf, Arc<Preview>>>,
+    /// The pages' sessions, by the id each page chose.
+    sessions: Mutex<HashMap<String, Arc<Session>>>,
     max_previews: usize,
     idle: Duration,
     invert_colors: String,
@@ -207,7 +221,7 @@ struct Preview {
     file: PathBuf,
     rel: String,
     state: watch::Receiver<Start>,
-    /// Pages connected now.
+    /// The sessions on it now.
     pages: AtomicUsize,
     last_used: Mutex<Instant>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
@@ -247,7 +261,7 @@ impl Preview {
     }
 }
 
-/// A page on a preview, while it is connected.
+/// A session on a preview, while it lasts.
 struct PageGuard(Arc<Preview>);
 
 impl PageGuard {
@@ -262,6 +276,210 @@ impl Drop for PageGuard {
     fn drop(&mut self) {
         *self.0.last_used.lock() = Instant::now();
         self.0.pages.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A page's session: its own connection to the preview, kept while the page is
+/// away. What the preview sends is numbered and waits here until the page has
+/// confirmed it; a page coming back says how many frames it has and gets the
+/// rest, so its document goes on from where it was.
+struct Session {
+    preview: Arc<Preview>,
+    _guard: PageGuard,
+    to_child: tokio::sync::Mutex<SplitSink<ChildSocket, Message>>,
+    state: Mutex<SessionState>,
+    changed: Notify,
+    reader: Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+#[derive(Default)]
+struct SessionState {
+    /// The frames the page has not confirmed, by number.
+    waiting: VecDeque<(u64, Message)>,
+    waiting_bytes: usize,
+    /// The number of the last frame from the preview.
+    last: u64,
+    /// The number of the last frame the page confirmed.
+    confirmed: u64,
+    /// The page's connection that has the session now.
+    holder: Option<u64>,
+    away_since: Option<Instant>,
+    ended: bool,
+}
+
+impl Session {
+    fn push(&self, frame: Message) {
+        {
+            let mut state = self.state.lock();
+            if state.ended {
+                return;
+            }
+            state.last += 1;
+            let n = state.last;
+            state.waiting_bytes += frame.len();
+            state.waiting.push_back((n, frame));
+            if state.waiting_bytes > BEHIND_LIMIT {
+                log::info!(
+                    "hub: {}: a page away fell {} MB behind; it starts afresh when back",
+                    self.preview.rel,
+                    state.waiting_bytes >> 20
+                );
+                state.ended = true;
+            }
+        }
+        self.changed.notify_waiters();
+    }
+
+    fn confirm(&self, n: u64) {
+        let mut state = self.state.lock();
+        if n > state.last || n <= state.confirmed {
+            return;
+        }
+        state.confirmed = n;
+        while state.waiting.front().is_some_and(|(m, _)| *m <= n) {
+            if let Some((_, frame)) = state.waiting.pop_front() {
+                state.waiting_bytes -= frame.len();
+            }
+        }
+    }
+
+    /// Gives the session to the page's connection `conn`, which has every frame
+    /// up to `have`; a connection that had it lets go.
+    fn take(&self, conn: u64, have: u64) -> bool {
+        {
+            let mut state = self.state.lock();
+            if state.ended || have < state.confirmed || have > state.last {
+                return false;
+            }
+            state.holder = Some(conn);
+            state.away_since = None;
+        }
+        self.confirm(have);
+        self.changed.notify_waiters();
+        true
+    }
+
+    fn release(&self, conn: u64) {
+        let mut state = self.state.lock();
+        if state.holder == Some(conn) {
+            state.holder = None;
+            state.away_since = Some(Instant::now());
+        }
+    }
+
+    /// The frames after `sent`, once there are any; `None` once `conn` no
+    /// longer has the session.
+    async fn next_frames(&self, conn: u64, sent: u64) -> Option<Vec<(u64, Message)>> {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let state = self.state.lock();
+                if state.ended || state.holder != Some(conn) {
+                    return None;
+                }
+                let frames: Vec<_> = state
+                    .waiting
+                    .iter()
+                    .filter(|(n, _)| *n > sent)
+                    .cloned()
+                    .collect();
+                if !frames.is_empty() {
+                    return Some(frames);
+                }
+            }
+            notified.await;
+        }
+    }
+
+    /// What a page coming back with `have` frames missed: frames and bytes.
+    fn missed(&self, have: u64) -> (usize, usize) {
+        let state = self.state.lock();
+        state
+            .waiting
+            .iter()
+            .filter(|(n, _)| *n > have)
+            .fold((0, 0), |(count, bytes), (_, frame)| (count + 1, bytes + frame.len()))
+    }
+
+    async fn send(&self, message: Message) -> bool {
+        self.to_child.lock().await.send(message).await.is_ok()
+    }
+
+    fn away_too_long(&self) -> bool {
+        let state = self.state.lock();
+        state.holder.is_none() && state.away_since.is_some_and(|t| t.elapsed() > AWAY)
+    }
+
+    fn is_over(&self) -> bool {
+        self.state.lock().ended || self.away_too_long()
+    }
+
+    fn end(&self) {
+        self.state.lock().ended = true;
+        if let Some(reader) = self.reader.lock().take() {
+            reader.abort();
+        }
+        self.changed.notify_waiters();
+    }
+}
+
+/// What the preview sends a session, numbered, the large frames compressed.
+async fn read_child(session: Arc<Session>, mut from_child: SplitStream<ChildSocket>) {
+    while let Some(message) = from_child.next().await {
+        let frame = match message {
+            Ok(Message::Binary(data)) if data.len() >= COMPRESS_FROM => {
+                let (size, started) = (data.len(), Instant::now());
+                let Ok(packed) = tokio::task::spawn_blocking(move || pack(&data)).await else {
+                    break;
+                };
+                if size >= 1 << 20 {
+                    log::info!(
+                        "hub: {}: {:.1} MB compressed to {:.1} MB ({} ms)",
+                        session.preview.rel,
+                        size as f64 / 1e6,
+                        packed.len() as f64 / 1e6,
+                        started.elapsed().as_millis()
+                    );
+                }
+                Message::Binary(packed.into())
+            }
+            Ok(message @ (Message::Text(_) | Message::Binary(_))) => message,
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(_) => continue,
+        };
+        session.push(frame);
+    }
+    session.end();
+}
+
+/// `hub-hello <session> <frames it has>`: the first thing a page says.
+fn parse_hello(text: &str) -> Option<(String, u64)> {
+    let mut words = text.strip_prefix("hub-hello ")?.split(' ');
+    let id = words.next()?;
+    let have = words.next()?.parse().ok()?;
+    let fits = (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric());
+    fits.then(|| (id.to_owned(), have))
+}
+
+/// A line a page asks the hub to log, on one line and short.
+fn clean(text: &str) -> String {
+    text.chars()
+        .take(400)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+fn ago(since: Option<Instant>) -> String {
+    let Some(since) = since else {
+        return "a moment".into();
+    };
+    let s = since.elapsed().as_secs();
+    if s < 120 {
+        format!("{s} s")
+    } else {
+        format!("{} min", s / 60)
     }
 }
 
@@ -319,8 +537,7 @@ impl Hub {
             if hyper_tungstenite::is_upgrade_request(&req) {
                 return match hyper_tungstenite::upgrade(&mut req, None) {
                     Ok((response, page)) => {
-                        let preview = self.preview(&file, &rel);
-                        tokio::spawn(self.clone().bridge(preview, page));
+                        tokio::spawn(self.clone().bridge(file, rel, page));
                         response
                     }
                     Err(err) => text(StatusCode::BAD_REQUEST, &err.to_string()),
@@ -701,6 +918,25 @@ impl Hub {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
+            let over: Vec<_> = {
+                let mut sessions = self.sessions.lock();
+                let ids: Vec<_> = sessions
+                    .iter()
+                    .filter(|(_, s)| s.is_over())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                ids.iter().filter_map(|id| sessions.remove(id)).collect()
+            };
+            for session in over {
+                if session.away_too_long() {
+                    log::info!(
+                        "hub: {}: a page away for {:?} is given up",
+                        session.preview.rel,
+                        AWAY
+                    );
+                }
+                session.end();
+            }
             let idle: Vec<_> = self
                 .previews
                 .lock()
@@ -730,102 +966,158 @@ impl Hub {
         }
     }
 
-    /// A page's connection, passed to its preview and back.
-    async fn bridge(self: Arc<Self>, preview: Arc<Preview>, page: HyperWebsocket) {
-        let page = match page.await {
-            Ok(page) => page,
-            Err(err) => {
-                log::warn!("hub: page of {}: {err}", preview.rel);
-                return;
-            }
-        };
-        let _guard = PageGuard::new(preview.clone());
-        let addr = match preview.address().await {
-            Ok(addr) => addr,
-            Err(why) => {
-                log::warn!("hub: {}: {why}", preview.rel);
-                return;
-            }
-        };
+    /// A new session for the page that chose `id`, on a connection of its own
+    /// to the document's preview.
+    async fn open_session(
+        self: &Arc<Self>,
+        file: &Path,
+        rel: &str,
+        id: &str,
+    ) -> Result<Arc<Session>, String> {
+        let preview = self.preview(file, rel);
+        let addr = preview.address().await?;
         let child = match connect(addr).await {
             Ok(child) => child,
             Err(err) => {
-                log::warn!("hub: cannot reach the preview of {}: {err}", preview.rel);
                 preview.stop();
+                return Err(format!("cannot reach the preview: {err}"));
+            }
+        };
+        let (to_child, from_child) = child.split();
+        let session = Arc::new(Session {
+            _guard: PageGuard::new(preview.clone()),
+            preview,
+            to_child: tokio::sync::Mutex::new(to_child),
+            state: Mutex::default(),
+            changed: Notify::new(),
+            reader: Mutex::new(None),
+        });
+        let reader = tokio::spawn(read_child(session.clone(), from_child));
+        *session.reader.lock() = Some(reader.abort_handle());
+        if let Some(old) = self.sessions.lock().insert(id.to_owned(), session.clone()) {
+            old.end();
+        }
+        Ok(session)
+    }
+
+    /// A page's connection. The page names its session and what it has; the
+    /// hub goes on with that session, or starts a new one, and says which
+    /// (`hub,resumed` or `hub,fresh`). Then frames go to the page, and the
+    /// page's own messages to the preview, except those for the hub: `hub-ack
+    /// <n>` (it has every frame up to n), `hub-ping` (is this connection
+    /// alive?), `hub-log <text>` (a line for the hub's log).
+    async fn bridge(self: Arc<Self>, file: PathBuf, rel: String, page: HyperWebsocket) {
+        let page = match page.await {
+            Ok(page) => page,
+            Err(err) => {
+                log::warn!("hub: page of {rel}: {err}");
                 return;
             }
         };
-
         let (mut page_tx, mut page_rx) = page.split();
-        let (mut child_tx, mut child_rx) = child.split();
-        let last_pong = Mutex::new(Instant::now());
-
-        let up = async {
-            while let Some(Ok(message)) = page_rx.next().await {
-                match message {
-                    Message::Text(_) | Message::Binary(_) => {
-                        if child_tx.send(message).await.is_err() {
-                            break;
-                        }
+        let hello = match tokio::time::timeout(Duration::from_secs(30), page_rx.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => text.to_string(),
+            _ => return,
+        };
+        let Some((id, have)) = parse_hello(&hello) else {
+            // a page from before sessions: it reloads, and gets the new one
+            log::info!("hub: {rel}: a page without a session; it reloads");
+            return;
+        };
+        let conn = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let existing = self.sessions.lock().get(&id).cloned();
+        let (session, mut sent, answer) = match existing {
+            Some(session) if session.take(conn, have) => {
+                if have > 0 {
+                    let away = ago(session.state.lock().away_since);
+                    let (count, bytes) = session.missed(have);
+                    log::info!(
+                        "hub: {rel}: a page is back after {away}; it missed {count} frames ({} kB)",
+                        bytes / 1000
+                    );
+                }
+                (session, have, "hub,resumed")
+            }
+            existing => {
+                if have > 0 {
+                    let why = if existing.is_some() {
+                        "its session could not go on"
+                    } else {
+                        "its session had ended"
+                    };
+                    log::info!("hub: {rel}: a page is back; {why}, so it gets the document again");
+                }
+                match self.open_session(&file, &rel, &id).await {
+                    Ok(session) if session.take(conn, 0) => (session, 0, "hub,fresh"),
+                    Ok(_) => return,
+                    Err(why) => {
+                        log::warn!("hub: {rel}: {why}");
+                        return;
                     }
-                    Message::Pong(_) => *last_pong.lock() = Instant::now(),
-                    Message::Close(_) => break,
-                    _ => {}
                 }
             }
         };
-        let down = async {
-            let mut ping = tokio::time::interval(Duration::from_secs(25));
-            ping.tick().await;
-            loop {
-                tokio::select! {
-                    message = child_rx.next() => {
-                        let message = match message {
-                            Some(Ok(Message::Binary(data))) if data.len() >= COMPRESS_FROM => {
-                                let (size, started) = (data.len(), Instant::now());
-                                let Ok(data) = tokio::task::spawn_blocking(move || deflate(&data)).await
-                                else {
-                                    break;
-                                };
-                                if size >= 1 << 20 {
-                                    log::info!(
-                                        "hub: {}: {:.1} MB sent as {:.1} MB ({} ms)",
-                                        preview.rel,
-                                        size as f64 / 1e6,
-                                        data.len() as f64 / 1e6,
-                                        started.elapsed().as_millis()
-                                    );
-                                }
-                                Message::Binary(data.into())
+        if page_tx
+            .send(Message::Binary(Bytes::from_static(answer.as_bytes())))
+            .await
+            .is_err()
+        {
+            session.release(conn);
+            return;
+        }
+
+        let mut ping = tokio::time::interval(Duration::from_secs(25));
+        ping.tick().await;
+        let mut last_pong = Instant::now();
+        'connection: loop {
+            tokio::select! {
+                frames = session.next_frames(conn, sent) => {
+                    let Some(frames) = frames else { break };
+                    for (n, frame) in frames {
+                        if page_tx.send(frame).await.is_err() {
+                            break 'connection;
+                        }
+                        sent = n;
+                    }
+                }
+                message = page_rx.next() => match message {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(n) = text.strip_prefix("hub-ack ") {
+                            if let Ok(n) = n.trim().parse() {
+                                session.confirm(n);
                             }
-                            Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => message,
-                            Some(Err(err)) => {
-                                log::warn!("hub: preview of {}: {err}", preview.rel);
+                        } else if text.as_str() == "hub-ping" {
+                            let pong = Message::Binary(Bytes::from_static(b"hub,pong"));
+                            if page_tx.send(pong).await.is_err() {
                                 break;
                             }
-                            Some(Ok(Message::Close(_))) | None => break,
-                            Some(Ok(_)) => continue,
-                        };
-                        if page_tx.send(message).await.is_err() {
+                        } else if let Some(line) = text.strip_prefix("hub-log ") {
+                            log::info!("hub: {rel}: the page: {}", clean(line));
+                        } else if !session.send(Message::Text(text)).await {
                             break;
                         }
                     }
-                    _ = ping.tick() => {
-                        if last_pong.lock().elapsed() > PAGE_TIMEOUT {
-                            log::info!("hub: a page of {} stopped answering", preview.rel);
+                    Some(Ok(message @ Message::Binary(_))) => {
+                        if !session.send(message).await {
                             break;
                         }
-                        if page_tx.send(Message::Ping(Bytes::new())).await.is_err() {
-                            break;
-                        }
+                    }
+                    Some(Ok(Message::Pong(_))) => last_pong = Instant::now(),
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
+                },
+                _ = ping.tick() => {
+                    if last_pong.elapsed() > PAGE_TIMEOUT {
+                        log::info!("hub: {rel}: a page stopped answering");
+                        break;
+                    }
+                    if page_tx.send(Message::Ping(Bytes::new())).await.is_err() {
+                        break;
                     }
                 }
             }
-        };
-        tokio::select! {
-            _ = up => {}
-            _ = down => {}
         }
+        session.release(conn);
     }
 }
 
@@ -894,11 +1186,21 @@ async fn drain_control_plane(addr: SocketAddr) {
     }
 }
 
-fn deflate(data: &[u8]) -> Vec<u8> {
+/// A large frame, compressed: `z:`, the frame's own name and a comma, then the
+/// whole frame in raw deflate. The name tells the page what the frame is
+/// before it unpacks it.
+fn pack(data: &[u8]) -> Vec<u8> {
     use flate2::{Compression, write::DeflateEncoder};
     use std::io::Write;
-    let mut out = Vec::with_capacity(data.len() / 5 + 16);
-    out.extend_from_slice(b"z,");
+    let name = data
+        .iter()
+        .take(32)
+        .position(|&b| b == b',')
+        .map_or(&[][..], |at| &data[..at]);
+    let mut out = Vec::with_capacity(data.len() / 5 + 48);
+    out.extend_from_slice(b"z:");
+    out.extend_from_slice(name);
+    out.push(b',');
     let mut encoder = DeflateEncoder::new(out, Compression::new(3));
     encoder.write_all(data).expect("deflate into memory");
     encoder.finish().expect("deflate into memory")
@@ -1029,15 +1331,26 @@ mod tests {
     }
 
     #[test]
-    fn deflate_inflates() {
+    fn packed_frames_unpack() {
         use std::io::Read;
         let data = b"new,".repeat(50_000);
-        let z = deflate(&data);
-        assert_eq!(&z[..2], b"z,");
+        let z = pack(&data);
+        assert_eq!(&z[..6], b"z:new,");
         let mut out = Vec::new();
-        flate2::read::DeflateDecoder::new(&z[2..])
+        flate2::read::DeflateDecoder::new(&z[6..])
             .read_to_end(&mut out)
             .unwrap();
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn hellos() {
+        assert_eq!(
+            parse_hello("hub-hello 0123abcdef 12"),
+            Some(("0123abcdef".into(), 12))
+        );
+        assert_eq!(parse_hello("hub-hello short 0"), None);
+        assert_eq!(parse_hello("hub-hello 0123abcd/ef 0"), None);
+        assert_eq!(parse_hello("current"), None);
     }
 }

@@ -39,6 +39,8 @@ Arne's build of tinymist: the upstream release tag plus the fixes below, install
 | feat(preview): a contents panel | `o` or the button at the top left opens the outline at the left of the page, the document narrowing beside it: numbers and titles from the server (`outline,` on the data plane, with each heading's displayed number), a filter focused on `o` (words of a number or title, ↑ ↓, Enter), a click or Enter jumps as a link does (Cmd+[ comes back), the heading being read is marked; the right edge drags to another width (the document refits on release, a double click resets it); open or closed and the width are kept per document | flavor |
 | feat(hub): the previews of a documents folder, for a phone | `tinymist hub` serves a home page (favourite folders, the documents changed last, a search over the favourites, a browser of the folder) and `/v/<path>`, the preview of one document: it starts a `tinymist preview` for it on first use, on loopback ports, passes the page's connection through and compresses large frames (a 42 MB document arrives as 7 MB). At most four previews run; one stops 15 min after its last page. A request must name the published host and carry a permitted `Tailscale-User-Login`. Previews run with `--navigate-in-page`: a click on a link into another document makes that page open the target at its label; other clicks go nowhere. On a narrow screen the contents panel lies over the document, jumps are browser history steps, and a document with a few wide sheets first fits its commonest page | flavor only |
 | fix(hub): a phone keeps only the pages near the view | construction-details took Safari on iOS to 1.6 GB (250,000 svg elements, 164,000 of them glyphs) and iOS killed the page. A hub page now keeps in the document only the pages within two screens of the view and each page's svg as text, filled in and emptied as the view moves (typst-dom's new `svgFilter` hook); a changed page in an update is filled before typst-dom patches it. 1.6 GB → 0.57 GB (peak 0.9 GB) in the iOS simulator. Pages on the Mac are unchanged | flavor only |
+| fix(preview): a page's whole document is its own; a page without an editor learns each render's version | `current` (a page connecting) made every page of the document take the whole document again: the render request is a broadcast to all pages' renderers, and now names the page that asked. With `--navigate-in-page` (the hub) every render is followed by `doc-version,<hash>`, a hash over what the pages draw without their source positions: an edit undone, or a changed comment, gives the same version, in any preview process | flavor only |
+| feat(hub): a phone's page keeps its document | iOS closes a page's connection whenever the screen locks or Safari leaves the screen, and the page reloaded the whole document (52 MB, 15–30 s blank on the phone). The hub now keeps a session per page: its own connection to the preview, kept for two hours while the page is away, its frames numbered until the page confirms them (`hub-hello <id> <have>`, `hub-ack`, `hub-ping`); a page back on screen reconnects and gets only what it missed. A page holds the document's changes while it is read: a blue button under the home button shows them in place, at the same reading point; changes that draw nothing new go in at once. A page loaded again shows the pages it showed last (kept in IndexedDB) until its document is drawn. The page logs why it connected again, how long a whole document took, and what it did with held changes, to the hub's log (`hub-log`) | flavor only |
 | build: bundle the locally built preview page | un-comments the `tinymist-assets = { path = ... }` patch in `Cargo.toml` | flavor only |
 
 ## The hub: previews on a phone
@@ -55,6 +57,15 @@ http://127.0.0.1:23690` publishes it inside the tailnet only (never `funnel`). T
 the host (`<mac>.<tailnet>.ts.net:8443`) and the Tailscale login a request must carry.
 Favourites: `~/Library/Application Support/tinymist-hub/favorites.json`; log:
 `~/Library/Logs/typst-hub.log`. `rebuild.sh` restarts the agent after an install.
+
+A page's connection to the hub is a session (`hub.rs`, `Session`). The page names a random id
+of its own (in memory: a page loaded again is a new page) and the frames it has; the hub keeps
+the session's connection to the preview while the page is away, numbers what the preview sends
+and drops it once the page confirms it. A session ends two hours after its page went, when
+256 MB pile up for it, or with its preview; a page back after that gets a new session and the
+whole document, which waits like any change and goes in afresh with the next change shown
+(the new session numbers its fonts its own way). Compressed frames are `z:<name>,` and the
+frame in raw deflate. What the page does (`hub.ts`) is in the hub's log as `the page: …`.
 
 ## Rebuilding for a new upstream release
 

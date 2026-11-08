@@ -1,5 +1,6 @@
 /* A page served by the hub (hub.ts): buttons a finger can hit, the way
-   home, and the line that says why the page waits. */
+   home, the button that shows the changes waiting, the line that says why
+   the page waits, and the last view shown while the document comes. */
 
 body.typst-hub #typst-toc-button {
   top: 8px;
@@ -24,7 +25,26 @@ body.typst-hub #typst-toc-button {
   opacity: 0.85;
 }
 
-#typst-hub-home svg {
+#typst-hub-update {
+  --hub-button-bg: #0a6cff;
+  --hub-button-fg: #fff;
+
+  position: fixed;
+  left: 8px;
+  top: 96px;
+  z-index: 2;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  background: var(--hub-button-bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+#typst-hub-home svg,
+#typst-hub-update svg {
   display: block;
   width: 100%;
   height: 100%;
@@ -47,6 +67,25 @@ body.typst-hub #typst-toc-button {
   color: #f2f2f2;
   font: 14px/1.35 system-ui, -apple-system, sans-serif;
   text-align: center;
+}
+
+#typst-hub-update svg {
+  stroke-width: 1.6;
+}
+
+#typst-hub-last-view {
+  position: fixed;
+  z-index: 1;
+  overflow: hidden;
+  background: inherit;
+}
+
+#typst-hub-last-view.invert-colors .typst-doc {
+  filter: invert(0.933333) hue-rotate(180deg);
+}
+
+#typst-hub-last-view.invert-colors .typst-image {
+  filter: invert(0) hue-rotate(0deg);
 }
 
 @media (prefers-color-scheme: dark) {

@@ -20,12 +20,14 @@ import { installLinkHistory } from "./nav";
 import { Toc, installToc } from "./toc";
 import {
   hub,
+  hubConnect,
   hubFitCommonPage,
   hubWindowPages,
-  hubInflater,
   hubNavigate,
   hubProbeFailed,
+  hubShowLastView,
   hubStatus,
+  hubViewRestored,
   installHubPage,
 } from "./hub";
 export { PreviewMode } from "typst-dom/typst-doc.mjs";
@@ -54,6 +56,8 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     return () => {};
   }
   const windowElem = document.getElementById("typst-container")! as TypstDomWindowElement;
+  // under the hub, the pages shown last, painted before the renderer loads
+  await hubShowLastView();
 
   let disposed = false;
   let $ws: WebSocketSubject<ArrayBuffer> | undefined = undefined;
@@ -462,10 +466,15 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   // The zoom applies before the first render, the place once its page has
   // rendered. A label in the address wins over the place, and so does a scroll
   // the editor sends, which ends the retries (scrollToLocation).
+  function placeRestored() {
+    viewRestored = true;
+    hubViewRestored();
+  }
+
   function restoreView(svgDoc: TypstDocument) {
     const view = keepsView ? loadView() : undefined;
     if (view === undefined) {
-      viewRestored = true;
+      placeRestored();
       if (keepsView) {
         hubFitCommonPage(svgDoc);
       }
@@ -473,25 +482,25 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
     }
     svgDoc.impl.setScaleRatio(view.scaleRatio);
     if (addressLabel() !== null) {
-      viewRestored = true;
+      placeRestored();
       return;
     }
     const token = ++latestLocation;
     let tries = 0;
     const attempt = () => {
       if (token !== latestLocation) {
-        viewRestored = true;
+        placeRestored();
         return;
       }
       if (!svgDoc.impl.isRendering && svgDoc.impl.scrollToViewPoint(view.point)) {
-        viewRestored = true;
+        placeRestored();
         return;
       }
       // a minute: a phone can take many seconds over its first render
       if (++tries < 600) {
         setTimeout(attempt, 100);
       } else {
-        viewRestored = true;
+        placeRestored();
       }
     };
     attempt();
@@ -500,42 +509,68 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   function setupSocket(svgDoc: TypstDocument): () => void {
     windowElem.documents.push(svgDoc);
 
-    // todo: reconnect setTimeout(() => setupSocket(svgDoc), 1000);
-    $ws = webSocket<ArrayBuffer>({
-      url,
-      binaryType: "arraybuffer",
-      serializer: (t) => t,
-      deserializer: (event) => event.data,
-      openObserver: {
-        next: (e) => {
-          const sock = e.target;
-          console.log("WebSocket connection opened", sock);
+    const batchMessageChannel = new Subject<ArrayBuffer>();
+    let closeSocket: () => void;
+
+    if (hub) {
+      // A phone drops the connection whenever its screen locks; the page
+      // connects again and goes on with its session (hub.ts).
+      closeSocket = hubConnect(url, {
+        deliver: (data) => batchMessageChannel.next(data),
+        opened(sock, fresh) {
           windowElem.typstWebsocket = sock as any;
-          svgDoc.reset();
-          windowElem.typstWebsocket.send("current");
           socketOpen = true;
-          hubStatus(null);
+          if (fresh) {
+            // the whole document; the page resets its own as it takes it
+            sock.send("current");
+          }
           landOnAddressLabel();
         },
-      },
-      closeObserver: {
-        next: (e) => {
-          console.log("WebSocket connection closed", e);
+        closed() {
           socketOpen = false;
-          $ws?.unsubscribe();
-          if (!disposed) {
-            // The data plane is on a port of its own that changes with every
-            // restart of the server, so reconnecting to `url` cannot succeed.
-            // Wait for the page's own server to answer again and reload from
-            // it; the reload picks up the new data plane. The zoom and the
-            // place survive it (restoreView).
-            waitForServerThenReload();
-          }
         },
-      },
-    });
-
-    const batchMessageChannel = new Subject<ArrayBuffer>();
+      });
+    } else {
+      $ws = webSocket<ArrayBuffer>({
+        url,
+        binaryType: "arraybuffer",
+        serializer: (t) => t,
+        deserializer: (event) => event.data,
+        openObserver: {
+          next: (e) => {
+            const sock = e.target;
+            console.log("WebSocket connection opened", sock);
+            windowElem.typstWebsocket = sock as any;
+            svgDoc.reset();
+            windowElem.typstWebsocket.send("current");
+            socketOpen = true;
+            hubStatus(null);
+            landOnAddressLabel();
+          },
+        },
+        closeObserver: {
+          next: (e) => {
+            console.log("WebSocket connection closed", e);
+            socketOpen = false;
+            $ws?.unsubscribe();
+            if (!disposed) {
+              // The data plane is on a port of its own that changes with every
+              // restart of the server, so reconnecting to `url` cannot succeed.
+              // Wait for the page's own server to answer again and reload from
+              // it; the reload picks up the new data plane. The zoom and the
+              // place survive it (restoreView).
+              waitForServerThenReload();
+            }
+          },
+        },
+      });
+      $ws.subscribe({
+        next: (data) => batchMessageChannel.next(data), // Called whenever there is a message from the server.
+        error: (err) => console.log("WebSocket Error: ", err), // Called if at any point WebSocket API signals some kind of error.
+        complete: () => console.log("complete"), // Called when connection is closed (for whatever reason).
+      });
+      closeSocket = () => $ws?.complete();
+    }
 
     const dispose = () => {
       disposed = true;
@@ -547,17 +582,8 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
       for (const sub of subsribes.splice(0, subsribes.length)) {
         sub.unsubscribe();
       }
-      $ws?.complete();
+      closeSocket();
     };
-
-    // window.typstWebsocket = new WebSocket("ws://127.0.0.1:23625");
-
-    const receive = hubInflater((data) => batchMessageChannel.next(data));
-    $ws.subscribe({
-      next: receive, // Called whenever there is a message from the server.
-      error: (err) => console.log("WebSocket Error: ", err), // Called if at any point WebSocket API signals some kind of error.
-      complete: () => console.log("complete"), // Called when connection is closed (for whatever reason).
-    });
 
     subsribes.push(
       batchMessageChannel
