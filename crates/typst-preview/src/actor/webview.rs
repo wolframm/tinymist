@@ -10,7 +10,8 @@ use super::{
     render::{PageId, RenderActorRequest},
 };
 use crate::{
-    CompileView, NavigateMessage, PendingScroll, ViewerWindowStateMessage, WsMessage,
+    CompileView, NavigateMessage, NoticeMessage, NoticesSlot, PendingScroll,
+    ViewerWindowStateMessage, WsMessage,
     actor::editor::DocToSrcJumpResolveRequest,
 };
 
@@ -21,6 +22,8 @@ pub type SrcToDocJumpInfo = DocumentPosition;
 pub enum WebviewActorRequest {
     ViewportPosition(DocumentPosition),
     SrcToDocJump(Vec<SrcToDocJumpInfo>),
+    /// The editor's notices, as JSON.
+    Notices(String),
     // CursorPosition(CursorPosition),
 }
 
@@ -56,6 +59,8 @@ pub struct WebviewActor<'a, C> {
     /// before the page connected, or by the page's address before the first
     /// compile. Sent once the page has its first document.
     deferred_scroll: Option<PendingScroll>,
+    /// The editor's notices as they are when this page connects.
+    notices: NoticesSlot,
 }
 
 pub struct Channels {
@@ -86,6 +91,7 @@ where
         render_sender: broadcast::Sender<RenderActorRequest>,
         view: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
         deferred_scroll: Option<PendingScroll>,
+        notices: NoticesSlot,
     ) -> Self {
         Self {
             page,
@@ -97,6 +103,7 @@ where
             render_sender,
             view,
             deferred_scroll,
+            notices,
         }
     }
 
@@ -150,6 +157,15 @@ where
     }
 
     pub async fn run(mut self) {
+        // The notices that came before this page did. The mailbox is
+        // subscribed already, so a list sent meanwhile follows this one.
+        let notices = self.notices.lock().clone();
+        if let Some(json) = notices {
+            self.webview_websocket_conn
+                .send(WsMessage::Binary(format!("notices,{json}").into()))
+                .await
+                .log_error("WebViewActor");
+        }
         loop {
             tokio::select! {
                 Ok(msg) = self.mailbox.recv() => {
@@ -163,6 +179,10 @@ where
                         WebviewActorRequest::ViewportPosition(jump_info) => {
                             let msg = position_req("viewport", jump_info);
                             self.webview_websocket_conn.send(WsMessage::Binary(msg.into()))
+                              .await.log_error("WebViewActor");
+                        }
+                        WebviewActorRequest::Notices(json) => {
+                            self.webview_websocket_conn.send(WsMessage::Binary(format!("notices,{json}").into()))
                               .await.log_error("WebViewActor");
                         }
                     }
@@ -232,6 +252,15 @@ where
                             _ => None,
                         };
                         self.editor_sender.send(EditorActorRequest::Navigate(NavigateMessage { kind, position })).log_error("WebViewActor");
+                    } else if let Some(notice) = msg.strip_prefix("notice ") {
+                        // `notice open|close <id>`: a click on a notice, or on its ×.
+                        let mut parts = notice.split_whitespace();
+                        if let (Some(action), Some(id)) = (parts.next(), parts.next()) {
+                            self.editor_sender.send(EditorActorRequest::Notice(NoticeMessage {
+                                action: action.to_owned(),
+                                id: id.to_owned(),
+                            })).log_error("WebViewActor");
+                        }
                     } else if let Some(state) = msg.strip_prefix("viewer-window-state ") {
                         if let Ok(state) = serde_json::from_str::<ViewerWindowStateMessage>(state) {
                             self.editor_sender.send(EditorActorRequest::ViewerWindowState(state)).log_error("WebViewActor");

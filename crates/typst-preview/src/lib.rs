@@ -209,6 +209,7 @@ impl Previewer {
                     h.renderer_tx.clone(),
                     h.doc_sender.clone(),
                     deferred_scroll,
+                    h.notices.clone(),
                 );
                 match h.format {
                     ExportTarget::Paged => {
@@ -308,6 +309,7 @@ pub struct PreviewBuilder {
     webview_conn: BroadcastChannel<WebviewActorRequest>,
     doc_sender: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     pending_scroll: PendingScrollSlot,
+    notices: NoticesSlot,
 
     compile_watcher: OnceLock<Arc<CompileWatcher>>,
 }
@@ -322,6 +324,7 @@ impl PreviewBuilder {
             webview_conn: broadcast::channel(32),
             doc_sender: Arc::new(parking_lot::RwLock::new(None)),
             pending_scroll: PendingScrollSlot::default(),
+            notices: NoticesSlot::default(),
             compile_watcher: OnceLock::new(),
         }
     }
@@ -352,6 +355,7 @@ impl PreviewBuilder {
             webview_conn: (webview_tx, _),
             doc_sender,
             pending_scroll,
+            notices,
             ..
         } = self;
 
@@ -368,6 +372,7 @@ impl PreviewBuilder {
             webview_tx.clone(),
             span_interner.clone(),
             pending_scroll.clone(),
+            notices.clone(),
         );
         let control_plane_handle = tokio::spawn(editor_actor.run());
         log::info!("Previewer: editor actor spawned");
@@ -384,6 +389,7 @@ impl PreviewBuilder {
             navigate_in_page: config.navigate_in_page,
             doc_sender,
             pending_scroll,
+            notices,
         };
 
         Previewer {
@@ -517,6 +523,47 @@ pub enum PendingScroll {
 /// The slot holding a [`PendingScroll`], shared by the editor actor (which
 /// fills it) and the data plane (which hands it to the next page).
 pub type PendingScrollSlot = Arc<parking_lot::Mutex<Option<PendingScroll>>>;
+
+/// A notice from the editor, shown at the top right of every page of the
+/// preview until it is clicked or closed: something that happened to the
+/// document while it was being read (an answer to a comment went in, say).
+/// What a click does is the editor's business; the page reports it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Notice {
+    /// The editor's name for it, in `[A-Za-z0-9_.-]`.
+    pub id: String,
+    /// A sign before the title.
+    #[serde(default)]
+    pub icon: String,
+    /// `ok`, `info` or `alert`: the colour of the sign.
+    #[serde(default)]
+    pub tone: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub text: String,
+    /// Small print above the title (another document's name).
+    #[serde(default)]
+    pub note: String,
+}
+
+/// `notices`: the editor's whole list, replacing the one before.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoticesRequest {
+    #[serde(default)]
+    pub items: Vec<Notice>,
+}
+
+/// What a page did with a notice: `open` (a click on it) or `close` (on its ×).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoticeMessage {
+    pub action: String,
+    pub id: String,
+}
+
+/// The editor's notices as the pages get them (JSON), kept for the pages
+/// still to connect: a reload, a tab opened later.
+pub type NoticesSlot = Arc<parking_lot::Mutex<Option<String>>>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChangeCursorPositionRequest {
@@ -704,6 +751,7 @@ struct DataPlane {
     renderer_tx: broadcast::Sender<RenderActorRequest>,
     doc_sender: Arc<parking_lot::RwLock<Option<Arc<dyn CompileView>>>>,
     pending_scroll: PendingScrollSlot,
+    notices: NoticesSlot,
 }
 
 /// The invert colors for the preview.

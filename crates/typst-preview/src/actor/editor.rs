@@ -11,7 +11,8 @@ use crate::debug_loc::{InternQuery, SpanInterner};
 use crate::outline::Outline;
 use crate::{
     ChangeCursorPositionRequest, DocToSrcJumpInfo, EditorServer, MemoryFiles, MemoryFilesShort,
-    NavigateMessage, PendingScroll, PendingScrollSlot, ResolveSourceLocRequest,
+    NavigateMessage, NoticeMessage, NoticesRequest, NoticesSlot, PendingScroll, PendingScrollSlot,
+    ResolveSourceLocRequest,
     ViewerWindowStateMessage,
 };
 
@@ -42,6 +43,7 @@ pub enum EditorActorRequest {
     DocToSrcJump(DocToSrcJumpInfo),
     ViewerWindowState(ViewerWindowStateMessage),
     Navigate(NavigateMessage),
+    Notice(NoticeMessage),
     Outline(Outline),
     CompileStatus(CompileStatus),
 }
@@ -119,6 +121,8 @@ pub struct EditorActor<T> {
     span_interner: SpanInterner,
     /// Where a scroll request goes when no page is there to receive it.
     pending_scroll: PendingScrollSlot,
+    /// The editor's notices, for the pages still to connect.
+    notices: NoticesSlot,
     /// The last jump sent to the editor and when, to send a click once.
     last_jump: Option<(DocToSrcJumpInfo, std::time::Instant)>,
 }
@@ -140,6 +144,8 @@ pub enum ControlPlaneMessage {
     UpdateMemoryFiles(MemoryFiles),
     #[serde(rename = "removeMemoryFiles")]
     RemoveMemoryFiles(MemoryFilesShort),
+    #[serde(rename = "notices")]
+    Notices(NoticesRequest),
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +163,8 @@ pub enum ControlPlaneResponse {
     ViewerWindowState(ViewerWindowStateMessage),
     #[serde(rename = "navigate")]
     Navigate(NavigateMessage),
+    #[serde(rename = "notice")]
+    Notice(NoticeMessage),
 }
 
 impl<T: EditorServer> EditorActor<T> {
@@ -168,6 +176,7 @@ impl<T: EditorServer> EditorActor<T> {
         webview_sender: broadcast::Sender<WebviewActorRequest>,
         span_interner: SpanInterner,
         pending_scroll: PendingScrollSlot,
+        notices: NoticesSlot,
     ) -> Self {
         Self {
             server,
@@ -178,6 +187,7 @@ impl<T: EditorServer> EditorActor<T> {
 
             span_interner,
             pending_scroll,
+            notices,
             last_jump: None,
         }
     }
@@ -221,6 +231,9 @@ impl<T: EditorServer> EditorActor<T> {
                         },
                         EditorActorRequest::Navigate(step) => {
                             self.editor_conn.resp_ctl_plane("Navigate", ControlPlaneResponse::Navigate(step)).await
+                        },
+                        EditorActorRequest::Notice(notice) => {
+                            self.editor_conn.resp_ctl_plane("Notice", ControlPlaneResponse::Notice(notice)).await
                         },
                         EditorActorRequest::DocToSrcJumpResolve(req) => {
                             self.source_scroll_by_span(req.span)
@@ -294,6 +307,15 @@ impl<T: EditorServer> EditorActor<T> {
                                 "UpdateMemoryFiles",
                                 self.server.update_memory_files(req, false).await,
                             );
+                        }
+                        // The whole list each time: kept for the pages still to
+                        // connect, and sent to those that are there.
+                        ControlPlaneMessage::Notices(req) => {
+                            log::debug!("EditorActor: {} notices from the editor", req.items.len());
+                            if let Ok(json) = serde_json::to_string(&req.items) {
+                                *self.notices.lock() = Some(json.clone());
+                                let _ = self.webview_sender.send(WebviewActorRequest::Notices(json));
+                            }
                         }
                         ControlPlaneMessage::RemoveMemoryFiles(req) => {
                             log::debug!("EditorActor: processing REMOVE memory files: {:?}", req.files);

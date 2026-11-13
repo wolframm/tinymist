@@ -550,6 +550,11 @@ impl PreviewState {
                         kind: s.kind,
                         position: s.position,
                     }),
+                    Notice(s) => client.send_notification::<NotifNotice>(&NoticeParams {
+                        task_id: tid.clone(),
+                        action: s.action,
+                        id: s.id,
+                    }),
                 }
             }
 
@@ -696,6 +701,23 @@ struct NotifNavigate;
 impl Notification for NotifNavigate {
     type Params = NavigateParams;
     const METHOD: &'static str = "tinymist/preview/navigate";
+}
+
+/// What a page did with one of the editor's notices
+/// (`tinymist/preview/notice`): `open` for a click on it, `close` for its ×.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NoticeParams {
+    task_id: String,
+    action: String,
+    id: String,
+}
+
+struct NotifNotice;
+
+impl Notification for NotifNotice {
+    type Params = NoticeParams;
+    const METHOD: &'static str = "tinymist/preview/notice";
 }
 
 #[derive(Serialize, Deserialize)]

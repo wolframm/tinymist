@@ -18,6 +18,7 @@ import { Subject, Subscription, buffer, debounceTime, fromEvent, tap } from "rxj
 import { handleHtmlPreviewFrame } from "./html-preview";
 import { installLinkHistory } from "./nav";
 import { Toc, installToc } from "./toc";
+import { Notices, installNotices } from "./notices";
 import {
   hub,
   hubConnect,
@@ -63,6 +64,7 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
   let $ws: WebSocketSubject<ArrayBuffer> | undefined = undefined;
   const subsribes: Subscription[] = [];
   let toc: Toc | undefined = undefined;
+  let notices: Notices | undefined = undefined;
   // What names this document in the page's storage. Under the hub every
   // document shares one origin, and two can have the same file name.
   const docKey = hub ? hub.path : document.title;
@@ -339,7 +341,14 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
       }
     });
 
+    // Before the link history: a click on a notice stops there (notices.ts).
+    notices = installNotices((message) => {
+      if (socketOpen) {
+        windowElem.typstWebsocket.send(message);
+      }
+    });
     subsribes.push(
+      notices.subscription,
       ...installLinkHistory(windowElem, (message) => {
         if (socketOpen) {
           windowElem.typstWebsocket.send(message);
@@ -724,6 +733,13 @@ export async function wsMain({ url, previewMode, isContentPreview }: WsArgs) {
         return;
       } else if (message[0] === "navigate") {
         hubNavigate(dec.decode(message[1] as Uint8Array));
+        return;
+      } else if (message[0] === "notices") {
+        try {
+          notices?.update(JSON.parse(dec.decode(message[1] as Uint8Array)));
+        } catch (e) {
+          console.error("notices", e);
+        }
         return;
       } else if (message[0] === "outline") {
         try {

@@ -6,6 +6,7 @@ import "./styles/layout.css";
 import "./styles/help-panel.css";
 import "./styles/outline.css";
 import "./styles/toc.css";
+import "./styles/notices.css";
 import "./styles/hub.css";
 
 import { wsMain, PreviewMode } from "./ws";
