@@ -470,6 +470,8 @@ mod tests {
 
 pub enum Location {
     Src(SourceLocation),
+    /// A source position, or the text nearest to it.
+    Near(SourceLocation),
 }
 
 pub trait EditorServer: Send + Sync + 'static {
@@ -581,6 +583,10 @@ pub struct ResolveSourceLocRequest {
     /// fixme: character is 0-based, UTF-16 code unit.
     /// We treat it as UTF-8 now.
     pub character: u32,
+    /// Where nothing is rendered for the position (a comment, a call's
+    /// arguments), go to the text nearest to it instead of nowhere.
+    #[serde(default)]
+    pub nearest: bool,
 }
 
 impl ResolveSourceLocRequest {

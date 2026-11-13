@@ -185,6 +185,53 @@ pub fn jump_from_cursor(document: &TypstDocument, source: &Source, cursor: usize
     jump_from_cursor_(document, source, cursor).unwrap_or_default()
 }
 
+/// How many of the nearest texts [`jump_near_cursor`] tries.
+const NEAR_TRIES: usize = 16;
+
+/// Finds the output location for a cursor that may sit where nothing is
+/// rendered (a comment, a call's arguments, a blank line): its own if it has
+/// one, else that of the text nearest to it in the source. The place something
+/// was taken out of still has its neighbours.
+pub fn jump_near_cursor(
+    document: &TypstDocument,
+    source: &Source,
+    cursor: usize,
+) -> Vec<Position> {
+    let exact = jump_from_cursor(document, source, cursor);
+    if !exact.is_empty() {
+        return exact;
+    }
+
+    // The texts by their distance from the cursor; of two as near, the one
+    // before it.
+    let mut texts = vec![];
+    let mut stack = vec![LinkedNode::new(source.root())];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), SyntaxKind::Text | SyntaxKind::MathText) {
+            let range = node.range();
+            if !range.is_empty() {
+                let after = range.start >= cursor;
+                let distance = if after {
+                    range.start - cursor
+                } else {
+                    cursor.saturating_sub(range.end)
+                };
+                texts.push((distance, after, range.end));
+            }
+        } else {
+            stack.extend(node.children());
+        }
+    }
+    texts.sort_unstable();
+
+    texts
+        .into_iter()
+        .take(NEAR_TRIES)
+        .map(|(_, _, end)| jump_from_cursor(document, source, end))
+        .find(|points| !points.is_empty())
+        .unwrap_or_default()
+}
+
 /// Finds the output location in the document for a cursor position.
 fn jump_from_cursor_(
     document: &TypstDocument,

@@ -466,6 +466,7 @@ impl ServerState {
                 filepath: focus_file.as_ref().to_owned(),
                 line: focus_location.line,
                 character: focus_location.character,
+                nearest: false,
             },
         ))
     }

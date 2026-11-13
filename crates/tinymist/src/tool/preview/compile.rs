@@ -8,7 +8,9 @@ use tinymist_preview::{
     CompileStatus, DocToSrcJumpInfo, EditorServer, Location, MemoryFiles, MemoryFilesShort,
 };
 use tinymist_project::{LspCompiledArtifact, LspWorld};
-use tinymist_query::{jump_from_click, jump_from_cross_document_link, jump_from_cursor};
+use tinymist_query::{
+    jump_from_click, jump_from_cross_document_link, jump_from_cursor, jump_near_cursor,
+};
 use typst::introspection::PagedPosition as Position;
 use typst::layout::{Abs, Point};
 use typst::syntax::{LinkedNode, Source, Span, SyntaxKind};
@@ -114,7 +116,7 @@ impl tinymist_preview::CompileView for PreviewCompileView {
 
     fn resolve_source_span(&self, loc: Location) -> Option<SourceSpanOffset> {
         let world = self.art.world();
-        let Location::Src(loc) = loc;
+        let (Location::Src(loc) | Location::Near(loc)) = loc;
 
         let source_id = world.id_for_path(Path::new(&loc.filepath))?;
 
@@ -153,7 +155,10 @@ impl tinymist_preview::CompileView for PreviewCompileView {
 
     fn resolve_document_position(&self, loc: Location) -> Vec<Position> {
         let world = self.art.world();
-        let Location::Src(src_loc) = loc;
+        let (src_loc, near) = match loc {
+            Location::Src(loc) => (loc, false),
+            Location::Near(loc) => (loc, true),
+        };
 
         let line = src_loc.pos.line as usize;
         let column = src_loc.pos.character as usize;
@@ -173,7 +178,11 @@ impl tinymist_preview::CompileView for PreviewCompileView {
             return vec![];
         };
 
-        jump_from_cursor(doc, &source, cursor)
+        if near {
+            jump_near_cursor(doc, &source, cursor)
+        } else {
+            jump_from_cursor(doc, &source, cursor)
+        }
     }
 
     fn resolve_span(&self, span: Span, offset: Option<usize>) -> Option<DocToSrcJumpInfo> {

@@ -303,15 +303,19 @@ impl RenderActor {
 
     fn resolve_source_loc(&self, req: ResolveSourceLocRequest) -> Option<()> {
         // todo: change name to resolve resolve src position
-        let info = self
-            .view()?
-            .resolve_document_position(crate::Location::Src(SourceLocation {
-                filepath: req.filepath.to_string_lossy().to_string(),
-                pos: LspPosition {
-                    line: req.line,
-                    character: req.character,
-                },
-            }));
+        let loc = SourceLocation {
+            filepath: req.filepath.to_string_lossy().to_string(),
+            pos: LspPosition {
+                line: req.line,
+                character: req.character,
+            },
+        };
+        let loc = if req.nearest {
+            crate::Location::Near(loc)
+        } else {
+            crate::Location::Src(loc)
+        };
+        let info = self.view()?.resolve_document_position(loc);
 
         if info.is_empty() {
             return None;
