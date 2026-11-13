@@ -1,7 +1,8 @@
 # tinymist flavor
 
 Arne's build of tinymist: the upstream release tag plus the fixes below, installed as
-`~/.local/bin/tinymist`, which precedes Homebrew's copy on PATH. The PyCharm Typst plugin
+`~/.local/bin/tinymist`, which precedes Homebrew's copy (installed, unused) on an
+interactive shell's PATH. The PyCharm Typst plugin
 (`~/Documents/code/typst-pycharm`) runs it as the language server, which hosts every preview.
 
 ## Layout
@@ -41,7 +42,7 @@ Arne's build of tinymist: the upstream release tag plus the fixes below, install
 | fix(hub): a phone keeps only the pages near the view | construction-details took Safari on iOS to 1.6 GB (250,000 svg elements, 164,000 of them glyphs) and iOS killed the page. A hub page now keeps in the document only the pages within two screens of the view and each page's svg as text, filled in and emptied as the view moves (typst-dom's new `svgFilter` hook); a changed page in an update is filled before typst-dom patches it. 1.6 GB → 0.57 GB (peak 0.9 GB) in the iOS simulator. Pages on the Mac are unchanged | flavor only |
 | fix(preview): a page's whole document is its own; a page without an editor learns each render's version | `current` (a page connecting) made every page of the document take the whole document again: the render request is a broadcast to all pages' renderers, and now names the page that asked. With `--navigate-in-page` (the hub) every render is followed by `doc-version,<hash>`, a hash over what the pages draw without their source positions: an edit undone, or a changed comment, gives the same version, in any preview process | flavor only |
 | feat(hub): a phone's page keeps its document | iOS closes a page's connection whenever the screen locks or Safari leaves the screen, and the page reloaded the whole document (52 MB, 15–30 s blank on the phone). The hub now keeps a session per page: its own connection to the preview, kept for two hours while the page is away, its frames numbered until the page confirms them (`hub-hello <id> <have>`, `hub-ack`, `hub-ping`); a page back on screen reconnects and gets only what it missed. A page holds the document's changes while it is read: a blue button under the home button shows them in place, at the same reading point; changes that draw nothing new go in at once. A page loaded again shows the pages it showed last (kept in IndexedDB) until its document is drawn. The page logs why it connected again, how long a whole document took, and what it did with held changes, to the hub's log (`hub-log`) | flavor only |
-| fix(hub): the buttons stay in the corner of a zoomed page | Safari's pinch zooms the whole page, things fixed to the window with it: the buttons grew and left the screen. The contents, home and update buttons, the contents panel and the status line sit in one box laid over what the screen shows (the visual viewport), at the scale that undoes the zoom: at any zoom they keep their corner and their size, and the panel spans the screen's height | flavor only |
+| fix(hub): the buttons stay in the corner of a zoomed page | Safari's pinch zooms the whole page, things fixed to the window with it: the buttons grew and left the screen. The contents, home and update buttons, the contents panel and the status line sit in one box (`#typst-hub-chrome`) laid over what the screen shows (the visual viewport), at the scale that undoes the zoom: at any zoom they keep their corner and their size, and the panel spans the screen's height | flavor only |
 | feat(preview): notices from the editor | the editor sends its list of notices (`tinymist.scrollPreview [task, {event: "notices", items: [{id, icon, tone, title, text, note}]}]`, the whole list each time); every page of the preview shows them at its top right, newest on top, outside the colour inversion, until one is clicked or closed with its ×; above 5 the older ones fold into `+n more`. The server keeps the list for a page that connects later, so a reload shows the same ones. The page reports a click or a close (`notice open <id>`, `notice close <id>`) and the server passes it on as `tinymist/preview/notice {taskId, action, id}`; what a click does is the editor's business (the PyCharm plugin: watchdoc's answers) | flavor |
 | feat(preview): a scroll to the text nearest a source position | `panelScrollTo` takes `nearest: true`: where nothing is rendered for the position (a comment, a call's arguments, a blank line) the page goes to the text nearest to it in the source, the one before it when two are as near (`jump_near_cursor`), instead of nowhere. Without the flag a scroll is as before. The PyCharm plugin sets it for a click on a notice: the place a comment was taken out of has no text of its own | flavor |
 | build: bundle the locally built preview page | un-comments the `tinymist-assets = { path = ... }` patch in `Cargo.toml` | flavor only |
@@ -60,6 +61,15 @@ http://127.0.0.1:23690` publishes it inside the tailnet only (never `funnel`). T
 the host (`<mac>.<tailnet>.ts.net:8443`) and the Tailscale login a request must carry.
 Favourites: `~/Library/Application Support/tinymist-hub/favorites.json`; log:
 `~/Library/Logs/typst-hub.log`. `rebuild.sh` restarts the agent after an install.
+The phone reaches the hub only while the Mac is awake; on battery the Mac sleeps
+after 30 min.
+
+A blank page, missing documents or an old page after a fresh build: look at
+`ps -ef | grep 'tinymist hub'` before reading any code. A second hub beside the
+agent's (`launchctl print gui/$(id -u)/com.user.typst-hub` names its pid) holds
+the port, and one started before the installed binary's date (`ps -p <pid> -o
+lstart=` against `stat -f '%Sm' ~/.local/bin/tinymist`) runs the old build:
+`kill <pid>` it, then `launchctl kickstart -k gui/$(id -u)/com.user.typst-hub`.
 
 A page's connection to the hub is a session (`hub.rs`, `Session`). The page names a random id
 of its own (in memory: a page loaded again is a new page) and the frames it has; the hub keeps
@@ -67,8 +77,8 @@ the session's connection to the preview while the page is away, numbers what the
 and drops it once the page confirms it. A session ends two hours after its page went, when
 256 MB pile up for it, or with its preview; a page back after that gets a new session and the
 whole document, which waits like any change and goes in afresh with the next change shown
-(the new session numbers its fonts its own way). Compressed frames are `z:<name>,` and the
-frame in raw deflate. What the page does (`hub.ts`) is in the hub's log as `the page: …`.
+(the new session numbers its fonts its own way). A frame of 64 KiB or more goes
+compressed, as `z:<name>,` and the frame in raw deflate. What the page does (`hub.ts`) is in the hub's log as `the page: …`.
 
 ## Rebuilding for a new upstream release
 
@@ -84,8 +94,34 @@ It prints which flavor commits survived the rebase. If a rebase conflicts, resol
 
 ```
 tinymist -V
-strings -a "$(which tinymist)" | grep -c 'e.metaKey || e.ctrlKey || e.altKey'   # 1 = flavor page
+strings -a "$(which tinymist)" | grep -c waitForServerThenReload   # above 0: the flavor's page
+pgrep -fl tinymist                           # the processes running now
+ps -p <pid> -o lstart=                       # when one started
+stat -f '%Sm' ~/.local/bin/tinymist          # when the binary was installed
 ```
 
-A running language server keeps the tinymist it started; restart it from PyCharm's
-status-bar widget, or restart PyCharm, to pick up a new binary.
+`rebuild.sh` makes the `strings` check itself before it installs. One `tinymist lsp`
+per open PyCharm project and one `tinymist hub` are what runs. A running language
+server keeps the tinymist it started: one started before the binary's date runs the
+old build, until it is restarted from PyCharm's status-bar widget or with PyCharm.
+
+## Colour inversion
+
+With `--invert-colors auto` the page inverts its document itself where the system
+appearance is dark (`invert(0.933333) hue-rotate(180deg)` on `.typst-doc`,
+`typst.css`); `<meta name="darkreader-lock" />` keeps Dark Reader off it. An image is
+inverted with the page and shows its own colours under the pointer. The setting is
+plain `auto`, never `{ rest = "auto", image = "never" }`, which keeps every image as
+drawn: an embedded SVG drawing then stays white paper on a dark page. A preview takes
+the setting when it starts: after a change, Stop Preview (`⌃⌥S`) and Preview (`⌃⌥P`).
+
+## Measuring a page
+
+- **A slow page, without Arne's Chrome**: headless Chrome over CDP with tracing
+  (`--headless=new --remote-debugging-port`, a `--user-data-dir` of its own in a
+  `.nosync` folder, `--use-mock-keychain --password-store=basic`), the main thread's
+  trace events summed by name (`RasterTask`, `ImageDecodeTask`, layout). Long-task
+  timings taken inside the page mislead.
+- **Safari's memory on iOS, without a device**: `footprint -p <pid>` on the iOS
+  Simulator's `com.apple.WebKit.WebContent` process (`phys_footprint`, `IOSurface`,
+  `JS JIT`).
